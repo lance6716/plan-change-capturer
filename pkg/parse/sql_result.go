@@ -11,7 +11,7 @@ import (
 // into an Op tree.
 func ParseSQLResultRow(idCols []string) (*plan.Op, error) {
 	if len(idCols) == 0 {
-		return nil, fmt.Errorf("no content in id column")
+		return nil, fmt.Errorf("no content in `id` column")
 	}
 
 	stack := make([]*plan.Op, 0, len(idCols)/2)
@@ -47,7 +47,10 @@ func ParseSQLResultRow(idCols []string) (*plan.Op, error) {
 		}
 		stack = stack[:identLevel]
 		fullName := string(runes[indentLen:])
-		newOp := &plan.Op{FullName: fullName}
+		newOp, err := plan.NewOp(fullName)
+		if err != nil {
+			return nil, err
+		}
 		if len(stack) > 0 {
 			stack[len(stack)-1].Children = append(stack[len(stack)-1].Children, newOp)
 		}

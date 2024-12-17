@@ -46,15 +46,24 @@ HashJoin_8	12487.50	root		inner join, equal:[eq(test.t1.a, test.t2.b)]
 
 	expected := &plan.Op{
 		FullName: "HashJoin_8",
+		Type:     "HashJoin",
+		ID:       "8",
 		Children: []*plan.Op{
 			{
 				FullName: "TableReader_15(Build)",
+				Type:     "TableReader",
+				ID:       "15",
+				Label:    "(Build)",
 				Children: []*plan.Op{
 					{
 						FullName: "Selection_14",
+						Type:     "Selection",
+						ID:       "14",
 						Children: []*plan.Op{
 							{
 								FullName: "TableFullScan_13",
+								Type:     "TableFullScan",
+								ID:       "13",
 							},
 						},
 					},
@@ -62,12 +71,19 @@ HashJoin_8	12487.50	root		inner join, equal:[eq(test.t1.a, test.t2.b)]
 			},
 			{
 				FullName: "TableReader_12(Probe)",
+				Type:     "TableReader",
+				ID:       "12",
+				Label:    "(Probe)",
 				Children: []*plan.Op{
 					{
 						FullName: "Selection_11",
+						Type:     "Selection",
+						ID:       "11",
 						Children: []*plan.Op{
 							{
 								FullName: "TableFullScan_10",
+								Type:     "TableFullScan",
+								ID:       "10",
 							},
 						},
 					},
