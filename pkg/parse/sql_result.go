@@ -7,16 +7,22 @@ import (
 	"github.com/pingcap/tidb/pkg/util/texttree"
 )
 
-// ParseSQLResultRow parses the result from EXPLAIN FORMAT = 'row' ... statement
-// into an Op tree.
-func ParseSQLResultRow(idCols []string) (*plan.Op, error) {
-	if len(idCols) == 0 {
-		return nil, fmt.Errorf("no content in `id` column")
+// NewPlanFromSQLResultRow parses the result from EXPLAIN FORMAT = 'row' ...
+// statement into an Op tree.
+//
+// The input is a slice of [id, task, access object] fields.
+func NewPlanFromSQLResultRow(result [][3]string) (*plan.Op, error) {
+	if len(result) == 0 {
+		return nil, fmt.Errorf("input has zero length")
 	}
 
-	stack := make([]*plan.Op, 0, len(idCols)/2)
+	stack := make([]*plan.Op, 0, len(result)/2)
 
-	for _, idCol := range idCols {
+	for _, fields := range result {
+		idCol, taskCol, accessObjCol := fields[0], fields[1], fields[2]
+		if idCol == "" {
+			return nil, fmt.Errorf("`id` column is empty")
+		}
 		// iterate over runes. Runes are not always single byte.
 		runes := []rune(idCol)
 
@@ -47,7 +53,8 @@ func ParseSQLResultRow(idCols []string) (*plan.Op, error) {
 		}
 		stack = stack[:identLevel]
 		fullName := string(runes[indentLen:])
-		newOp, err := plan.NewOp(fullName)
+
+		newOp, err := plan.NewOp(fullName, taskCol, accessObjCol)
 		if err != nil {
 			return nil, err
 		}

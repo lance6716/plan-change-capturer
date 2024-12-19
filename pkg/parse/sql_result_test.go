@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,11 +10,15 @@ import (
 )
 
 // parseBatchModeResult processes the result from `mysql ... --batch` command, to
-// output a map of column name to rows.
-func parseBatchModeResult(t *testing.T, result string) map[string][]string {
+// output a map of column name to rows. It reruns a slice of [3]string, where
+// the columns are [id, task, access object].
+func parseBatchModeResult(t *testing.T, result string) [][3]string {
 	lines := strings.Split(result, "\n")
 	cols := strings.Split(lines[0], "\t")
-	ret := make(map[string][]string, len(cols))
+	idColIdx := slices.Index(cols, "id")
+	taskColIdx := slices.Index(cols, "task")
+	accessObjColIdx := slices.Index(cols, "access object")
+	ret := make([][3]string, 0, len(lines)-1)
 
 	for i := 1; i < len(lines); i++ {
 		fields := strings.Split(lines[i], "\t")
@@ -22,68 +27,65 @@ func parseBatchModeResult(t *testing.T, result string) map[string][]string {
 			"column count mismatch at line %d\nfirst line: %s\nmismatch line: %s",
 			i, lines[0], lines[i],
 		)
-		for j, f := range fields {
-			ret[cols[j]] = append(ret[cols[j]], f)
-		}
+		ret = append(ret, [3]string{
+			fields[idColIdx], fields[taskColIdx], fields[accessObjColIdx],
+		})
 	}
 
 	return ret
 }
 
 func TestExample(t *testing.T) {
-	result := `id	estRows	task	access object	operator info
-HashJoin_8	12487.50	root		inner join, equal:[eq(test.t1.a, test.t2.b)]
-├─TableReader_15(Build)	9990.00	root		data:Selection_14
-│ └─Selection_14	9990.00	cop[tikv]		not(isnull(test.t2.b))
-│   └─TableFullScan_13	10000.00	cop[tikv]	table:t2	keep order:false, stats:pseudo
-└─TableReader_12(Probe)	9990.00	root		data:Selection_11
-  └─Selection_11	9990.00	cop[tikv]		not(isnull(test.t1.a))
-    └─TableFullScan_10	10000.00	cop[tikv]	table:t1	keep order:false, stats:pseudo`
-	resultMap := parseBatchModeResult(t, result)
+	sqlResult := `id	estRows	task	access object	operator info
+HashJoin_23	15609.38	root		inner join, equal:[eq(test.t1.c1, test.t3.c1)], other cond:lt(test.t3.c2, test.t2.c2)
+├─IndexReader_44(Build)	9990.00	root		index:IndexFullScan_43
+│ └─IndexFullScan_43	9990.00	cop[tikv]	table:t, index:idx(c2)	keep order:false, stats:pseudo
+└─HashJoin_37(Probe)	12487.50	root		inner join, equal:[eq(test.t1.c1, test.t2.c1)]
+  ├─TableReader_40(Build)	9990.00	root		data:Selection_39
+  │ └─Selection_39	9990.00	cop[tikv]		not(isnull(test.t1.c1))
+  │   └─TableFullScan_38	10000.00	cop[tikv]	table:foo	keep order:false, stats:pseudo
+  └─IndexReader_42(Probe)	9990.00	root		index:IndexFullScan_41
+    └─IndexFullScan_41	9990.00	cop[tikv]	table:t2, index:idx(c2)	keep order:false, stats:pseudo`
+	result := parseBatchModeResult(t, sqlResult)
 
-	p, err := ParseSQLResultRow(resultMap["id"])
+	p, err := NewPlanFromSQLResultRow(result)
 	require.NoError(t, err)
 
 	expected := &plan.Op{
-		FullName: "HashJoin_8",
-		Type:     "HashJoin",
-		ID:       "8",
+		Type: "HashJoin", ID: "23", Task: "root",
 		Children: []*plan.Op{
 			{
-				FullName: "TableReader_15(Build)",
-				Type:     "TableReader",
-				ID:       "15",
-				Label:    "(Build)",
+				Type: "IndexReader", ID: "44", Label: "(Build)", Task: "root",
 				Children: []*plan.Op{
 					{
-						FullName: "Selection_14",
-						Type:     "Selection",
-						ID:       "14",
-						Children: []*plan.Op{
-							{
-								FullName: "TableFullScan_13",
-								Type:     "TableFullScan",
-								ID:       "13",
-							},
-						},
+						Type: "IndexFullScan", ID: "43", Task: "cop[tikv]",
+						AccessObject: &plan.AccessObject{Table: "t", Index: "idx(c2)"},
 					},
 				},
 			},
 			{
-				FullName: "TableReader_12(Probe)",
-				Type:     "TableReader",
-				ID:       "12",
-				Label:    "(Probe)",
+				Type: "HashJoin", ID: "37", Label: "(Probe)", Task: "root",
 				Children: []*plan.Op{
 					{
-						FullName: "Selection_11",
-						Type:     "Selection",
-						ID:       "11",
+						Type: "TableReader", ID: "40", Label: "(Build)", Task: "root",
 						Children: []*plan.Op{
 							{
-								FullName: "TableFullScan_10",
-								Type:     "TableFullScan",
-								ID:       "10",
+								Type: "Selection", ID: "39", Task: "cop[tikv]",
+								Children: []*plan.Op{
+									{
+										Type: "TableFullScan", ID: "38", Task: "cop[tikv]",
+										AccessObject: &plan.AccessObject{Table: "foo"},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type: "IndexReader", ID: "42", Label: "(Probe)", Task: "root",
+						Children: []*plan.Op{
+							{
+								Type: "IndexFullScan", ID: "41", Task: "cop[tikv]",
+								AccessObject: &plan.AccessObject{Table: "t2", Index: "idx(c2)"},
 							},
 						},
 					},
