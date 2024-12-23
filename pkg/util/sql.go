@@ -23,6 +23,7 @@ func ConnectDB(
 	password string,
 ) (*sql.DB, error) {
 	// TODO(lance6716): TLS and pool idle connections
+	// TODO(lance6716): sql mode?
 	c, err := mysql.NewConnector(&mysql.Config{
 		User:                 user,
 		Passwd:               password,
@@ -35,3 +36,5 @@ func ConnectDB(
 	}
 	return sql.OpenDB(c), nil
 }
+
+// TODO(lance6716): retry

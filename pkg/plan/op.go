@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/pingcap/errors"
 )
 
 type AccessObject struct {
@@ -29,7 +31,7 @@ type Op struct {
 }
 
 // NewOp creates a new Op from given full name.
-func NewOp(fullName, task, accessObjectStr string) (*Op, error) {
+func NewOp(fullName, task, accessObjectKVStr string) (*Op, error) {
 	ret := &Op{}
 	// FullName has the format of "{Type}_{ID}{Label}".
 	i := strings.IndexByte(fullName, '_')
@@ -45,8 +47,8 @@ func NewOp(fullName, task, accessObjectStr string) (*Op, error) {
 	ret.Label = fullName[j+1:]
 
 	ret.Task = task
-	if accessObjectStr != "" {
-		accessObject, err := parseAccessObject(accessObjectStr)
+	if accessObjectKVStr != "" {
+		accessObject, err := parseAccessObject(accessObjectKVStr)
 		if err != nil {
 			return nil, err
 		}
@@ -55,6 +57,8 @@ func NewOp(fullName, task, accessObjectStr string) (*Op, error) {
 	return ret, nil
 }
 
+// parseAccessObject parses the field from `access object` column or `operator
+// info` column.
 func parseAccessObject(str string) (*AccessObject, error) {
 	// see tidb's AccessObject.String()
 	ret := &AccessObject{}
@@ -71,6 +75,9 @@ func parseAccessObject(str string) (*AccessObject, error) {
 		i := strings.Index(str, objectSep)
 		if i == -1 {
 			// table:t1
+			if str[len(str)-1] == ',' {
+				str = str[:len(str)-1]
+			}
 			ret.Table = str
 			return ret, nil
 		}
@@ -82,6 +89,9 @@ func parseAccessObject(str string) (*AccessObject, error) {
 			i = strings.Index(str, objectSep)
 			if i == -1 {
 				// table:t1, partition:p0,p1,p2
+				if str[len(str)-1] == ',' {
+					str = str[:len(str)-1]
+				}
 				ret.Partitions = strings.Split(str, ",")
 				return ret, nil
 			}
@@ -89,14 +99,53 @@ func parseAccessObject(str string) (*AccessObject, error) {
 			str = str[i+len(objectSep):]
 		}
 
-		// table:t4, index:idx(a, b)
 		if strings.HasPrefix(str, indexPrefix) {
-			ret.Index = str[len(indexPrefix):]
+			str = str[len(indexPrefix):]
+			// find next objectSep outside of parentheses
+			i = 1
+		forLoop:
+			for i < len(str) {
+				switch str[i] {
+				case '(':
+					for i < len(str) && str[i] != ')' {
+						i++
+					}
+					if i == len(str) {
+						return nil, errors.Errorf("unclosed parentheses of access object: %s", str)
+					}
+					j := strings.Index(str[i:], objectSep)
+					if j == -1 {
+						i = -1
+					} else {
+						i += j
+					}
+					break forLoop
+				case ',':
+					if i+1 < len(str) && str[i+1] == ' ' {
+						break forLoop
+					}
+				}
+				i++
+			}
+			if i == len(str) {
+				i = -1
+			}
+			if i == -1 {
+				// table:t4, index:idx(a, b)
+				if str[len(str)-1] == ',' {
+					str = str[:len(str)-1]
+				}
+				ret.Index = str
+				return ret, nil
+			}
+
+			ret.Index = str[:i]
 		}
 		return ret, nil
 	}
 
-	panic("not implemented")
+	// TODO(lance6716): implement CTE and subquery
+	return nil, nil
 }
 
 // NewOp4Test creates a Op for test. The input string should be in the format of
