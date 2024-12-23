@@ -10,17 +10,23 @@ import (
 	"github.com/pingcap/errors"
 )
 
-type stmtSummary struct {
-	schema     sql.NullString
-	sql        string
-	tableNames []string
-	planStr    string
+// StmtSummary is a golang representation of the record in
+// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY.
+type StmtSummary struct {
+	Schema     sql.NullString
+	SQL        string
+	TableNames [][2]string
+	PlanStr    string
+	SQLDigest  string
+	PlanDigest string
 }
 
-func readStmtSummary(ctx context.Context, db *sql.DB) ([]stmtSummary, error) {
+func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
 	// TODO(lance6716): pagination
-	query := `SELECT SCHEMA_NAME, QUERY_SAMPLE_TEXT, TABLE_NAMES, PLAN
+	query := `
+		SELECT 
+    		SCHEMA_NAME, QUERY_SAMPLE_TEXT, TABLE_NAMES, PLAN, DIGEST, PLAN_DIGEST
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
 		WHERE EXEC_COUNT > 1`
 	rows, err := db.QueryContext(ctx, query)
@@ -29,23 +35,34 @@ func readStmtSummary(ctx context.Context, db *sql.DB) ([]stmtSummary, error) {
 	}
 	defer rows.Close()
 
-	var ret []stmtSummary
+	var ret []StmtSummary
 	for rows.Next() {
 		var (
-			s          stmtSummary
+			s          StmtSummary
 			tableNames sql.NullString
 		)
-		err = rows.Scan(&s.schema, &s.sql, &tableNames, &s.planStr)
+		err = rows.Scan(&s.Schema, &s.SQL, &tableNames, &s.PlanStr, &s.SQLDigest, &s.PlanDigest)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
-		s.tableNames = strings.Split(tableNames.String, ",")
+		if len(tableNames.String) > 0 {
+			tables := strings.Split(tableNames.String, ",")
+			s.TableNames = make([][2]string, 0, len(tables))
+			for _, table := range tables {
+				dbAndTable := strings.Split(table, ".")
+				if len(dbAndTable) != 2 {
+					return nil, errors.Errorf("invalid table name, expected 2 fields after split on `.` : %s", table)
+				}
+				s.TableNames = append(s.TableNames, [2]string{dbAndTable[0], dbAndTable[1]})
+			}
+		}
+
 		ret = append(ret, s)
 	}
 	return ret, errors.Trace(rows.Err())
 }
 
-func exportTableStructure(
+func ReadTableStructure(
 	ctx context.Context,
 	db *sql.DB,
 	schema, table string,

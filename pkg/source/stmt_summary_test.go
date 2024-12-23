@@ -52,7 +52,7 @@ func TestReadStmtSummary(t *testing.T) {
 	mustExec(t, conn, "SELECT a FROM test_read_stmt_summary WHERE b = 1 AND c = 1")
 	mustExec(t, conn, "SELECT a FROM test_read_stmt_summary WHERE b = 2 AND c = 2")
 
-	summaries, err := readStmtSummary(ctx, db)
+	summaries, err := ReadStmtSummary(ctx, db)
 	require.NoError(t, err)
 	// at least we have executed above two queries which has same pattern
 	require.Greater(t, len(summaries), 0)
