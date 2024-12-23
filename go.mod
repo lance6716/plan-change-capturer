@@ -3,7 +3,10 @@ module github.com/lance6716/plan-change-capturer
 go 1.23.4
 
 require (
+	github.com/go-sql-driver/mysql v1.7.1
+	github.com/pingcap/errors v0.11.5-0.20240318064555-6bd07397691f
 	github.com/pingcap/tidb v1.1.0-beta.0.20241216080106-cc83417e5937
+	github.com/pingcap/tidb/pkg/parser v0.0.0-20241216093257-9823f003deda
 	github.com/stretchr/testify v1.10.0
 )
 
@@ -35,12 +38,10 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/petermattis/goid v0.0.0-20240813172612-4fcff4a6cae7 // indirect
-	github.com/pingcap/errors v0.11.5-0.20240318064555-6bd07397691f // indirect
 	github.com/pingcap/failpoint v0.0.0-20240528011301-b51a646c7c86 // indirect
 	github.com/pingcap/kvproto v0.0.0-20241120022153-92b0414aeed8 // indirect
 	github.com/pingcap/log v1.1.1-0.20241212030209-7e3ff8601a2a // indirect
 	github.com/pingcap/sysutil v1.0.1-0.20240311050922-ae81ee01f3a5 // indirect
-	github.com/pingcap/tidb/pkg/parser v0.0.0-20241216093257-9823f003deda // indirect
 	github.com/pingcap/tipb v0.0.0-20241105053214-f91fdb81a69e // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect

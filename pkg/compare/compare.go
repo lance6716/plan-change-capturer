@@ -81,6 +81,7 @@ func cmpAccessObject(a, b *plan.AccessObject) Result {
 }
 
 // removeProj removes the Projection operator from the plan tree in-place.
+// Currently we assume all types of projection are negligible to performance.
 func removeProj(p *plan.Op) {
 	if p.Type == plancodec.TypeProj {
 		if len(p.Children) == 1 {
@@ -102,6 +103,7 @@ func (vis *aliasVisitor) Enter(n ast.Node) (ast.Node, bool) {
 		return n, false
 	}
 
+	// TODO(lance6716): should be database.table when consider alias?
 	switch v := tbl.Source.(type) {
 	case *ast.TableName:
 		if tbl.AsName.L != "" {
