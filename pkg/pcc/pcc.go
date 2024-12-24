@@ -2,6 +2,7 @@ package pcc
 
 import (
 	"context"
+	"database/sql"
 	"net"
 	"net/http"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/sync"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/pkg/parser"
 	"go.uber.org/zap"
 )
 
@@ -34,11 +37,14 @@ func Run(cfg *Config) {
 // to stdout. If error happens, the logger will not be changed.
 func initLogger(loggerCfg *Log) error {
 	if loggerCfg.Filename != "" {
-		cfg := zap.NewProductionConfig()
-		cfg.OutputPaths = []string{loggerCfg.Filename}
-		logger, err := cfg.Build()
+		logger, _, err := log.InitLogger(&log.Config{
+			Level: "info",
+			File: log.FileLogConfig{
+				Filename: loggerCfg.Filename,
+			},
+		})
 		if err != nil {
-			return errors.Trace(err)
+			return errors.Annotatef(err, "failed to initialize logger with file %s", loggerCfg.Filename)
 		}
 		util.Logger = logger
 	}
@@ -46,84 +52,162 @@ func initLogger(loggerCfg *Log) error {
 }
 
 func run(cfg *Config) error {
-	oldCfg := &cfg.OldVersion
-	oldDB, err := util.ConnectDB(oldCfg.Host, oldCfg.Port, oldCfg.User, oldCfg.Password)
+	ctx := context.Background()
+
+	oldDB, newDB, err := prepareDBConnections(ctx, cfg)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	defer oldDB.Close()
-	newCfg := &cfg.NewVersion
-	newDB, err := util.ConnectDB(newCfg.Host, newCfg.Port, newCfg.User, newCfg.Password)
-	if err != nil {
-		return errors.Trace(err)
-	}
 	defer newDB.Close()
 
 	mgr := filemgr.NewManager(cfg.WorkDir)
 
-	ctx := context.Background()
+	oldCfg := &cfg.OldVersion
 
 	summaries, err := source.ReadStmtSummary(ctx, oldDB)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	// TODO(lance6716): tolerate some error
+
 	for _, s := range summaries {
 		err = mgr.WriteStmtSummary(s)
 		if err != nil {
 			return errors.Trace(err)
 		}
+	}
 
+	// TODO(lance6716): error should not fail the whole process
+	for _, s := range summaries {
 		for _, table := range s.TableNames {
-			createTable, err2 := source.ReadTableStructure(ctx, oldDB, table[0], table[1])
+			err2 := syncForTable(ctx, oldDB, newDB, table, s.Schema, mgr, oldCfg)
 			if err2 != nil {
 				return errors.Trace(err2)
 			}
-			err2 = mgr.WriteSchema(table[0], table[1], createTable)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
+		}
 
-			tableStats, err2 := source.ReadTableStats(
-				ctx,
-				http.DefaultClient,
-				net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.StatusPort)),
-				table[0],
-				table[1],
-			)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
-			err2 = mgr.WriteTableStats(table[0], table[1], tableStats)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
+		oldPlan, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
+		if err2 != nil {
+			return errors.Trace(err2)
+		}
+		newPlan, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
+		if err2 != nil {
+			return errors.Trace(err2)
+		}
 
-			err2 = sync.CreateTable(ctx, newDB, table[0], table[1], createTable)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
-			err2 = sync.LoadStats(ctx, newDB, mgr.GetTableStatsPath(table[0], table[1]))
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
+		reason, err2 := compare.CmpPlan(s.SQL, oldPlan, newPlan)
+		if err2 != nil {
+			return errors.Trace(err2)
+		}
 
-			oldPlan, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
-			newPlan, err2 := plan.NewPlanFromQuery(ctx, newDB, table[0], s.SQL)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
+		util.Logger.Info("compare result",
+			zap.String("reason", string(reason)),
+			zap.String("sql", s.SQL),
+		)
+	}
+	return nil
+}
 
-			reason, err2 := compare.CmpPlan(s.SQL, oldPlan, newPlan)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
+// prepareDBConnections creates sql.DB to the old and new version databases. For
+// the new version database, it also adjusts SQL variables for later usage.
+// Caller should close the returned DBs if it returns nil error.
+func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, error) {
+	oldCfg := &cfg.OldVersion
+	oldDB, err := util.ConnectDB(oldCfg.Host, oldCfg.Port, oldCfg.User, oldCfg.Password)
+	if err != nil {
+		return nil, nil, errors.Annotatef(err,
+			"connect to old version DB at %s",
+			net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port)),
+		)
+	}
+	newCfg := &cfg.NewVersion
+	newDB, err := util.ConnectDB(newCfg.Host, newCfg.Port, newCfg.User, newCfg.Password)
+	if err != nil {
+		oldDB.Close()
+		return nil, nil, errors.Annotatef(err,
+			"connect to new version DB at %s",
+			net.JoinHostPort(newCfg.Host, strconv.Itoa(newCfg.Port)),
+		)
+	}
+	// disable auto analyze for new version DB, to avoid stats change during the process
+	_, err = newDB.ExecContext(ctx, "SET @@global.tidb_enable_auto_analyze='OFF'")
+	if err != nil {
+		return nil, nil, errors.Annotate(err, "disable auto analyze for new version DB")
+	}
 
-			util.Logger.Info("compare result", zap.String("reason", string(reason)))
+	return oldDB, newDB, nil
+}
+
+func syncForTable(
+	ctx context.Context,
+	oldDB, newDB *sql.DB,
+	table [2]string,
+	currDB string,
+	mgr *filemgr.Manager,
+	oldCfg *TiDB,
+) error {
+	createDatabase, err2 := source.ReadCreateDatabase(ctx, oldDB, table[0])
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = mgr.WriteDatabaseStructure(table[0], createDatabase)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
+	createTable, err2 := source.ReadCreateTableOrView(ctx, oldDB, table[0], table[1])
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = mgr.WriteTableStructure(table[0], table[1], createTable)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
+	p := util.ParserPool.Get().(*parser.Parser)
+	stmt, err := p.ParseOneStmt(createTable, "", "")
+	util.ParserPool.Put(p)
+	if err != nil {
+		return errors.Annotatef(err, "parse create table statement for %s.%s", table[0], table[1])
+	}
+	tableNames := util.ExtractTableNames(stmt, table[0])
+	for _, t := range tableNames {
+		if t == table {
+			continue
+		}
+		err = syncForTable(ctx, oldDB, newDB, t, currDB, mgr, oldCfg)
+		if err != nil {
+			return errors.Trace(err)
 		}
 	}
+
+	tableStats, err2 := source.ReadTableStats(
+		ctx,
+		http.DefaultClient,
+		net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.StatusPort)),
+		table[0],
+		table[1],
+	)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = mgr.WriteTableStats(table[0], table[1], tableStats)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
+	err2 = sync.CreateDatabase(ctx, newDB, table[0], createDatabase)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = sync.CreateTable(ctx, newDB, table[0], table[1], createTable)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = sync.LoadStats(ctx, newDB, mgr.GetTableStatsPath(table[0], table[1]))
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 
 const (
 	schemaSubDir       = "schema"
-	schemaFilename     = "create-table.sql"
+	schemaFilename     = "create.sql"
 	stmtSummaryDir     = "stmt-summary"
 	stmtSummaryExt     = ".json"
 	tableStatsDir      = "table-stats"
@@ -21,6 +21,7 @@ const (
 )
 
 // Manager owns a folder and organizes the files needed by the plan change capturer.
+//
 // TODO(lance6716): explain hierarchy
 type Manager struct {
 	workDir string
@@ -46,8 +47,18 @@ func (m *Manager) WriteStmtSummary(s source.StmtSummary) error {
 	), content)
 }
 
-// WriteSchema writes the create table statement to the schema file.
-func (m *Manager) WriteSchema(db, table, createTable string) error {
+// WriteDatabaseStructure writes the CREATE DATABASE statement to the file.
+func (m *Manager) WriteDatabaseStructure(db, createDatabase string) error {
+	// TODO(lance6716): skip write file if we have already written.
+	dir := path.Join(m.workDir, schemaSubDir, db)
+	if err := os.MkdirAll(dir, 0776); err != nil {
+		return errors.Trace(err)
+	}
+	return m.atomicWrite(path.Join(dir, schemaFilename), []byte(createDatabase))
+}
+
+// WriteTableStructure writes the CREATE TABLE / VIEW statement to the file.
+func (m *Manager) WriteTableStructure(db, table, createTable string) error {
 	dir := path.Join(m.workDir, schemaSubDir, db, table)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)

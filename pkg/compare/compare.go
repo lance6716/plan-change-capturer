@@ -2,6 +2,7 @@ package compare
 
 import (
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
+	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/tidb/pkg/parser"
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
@@ -118,10 +119,10 @@ func (vis *aliasVisitor) Leave(n ast.Node) (ast.Node, bool) {
 }
 
 func normalizeTableNameAlias(sql string, a *plan.Op, b *plan.Op) error {
-	// TODO(lance6716): cache the parser
-	p := parser.New()
+	p := util.ParserPool.Get().(*parser.Parser)
 	// TODO(lance6716): check the result is fetched in default charset and collation
 	stmt, err := p.ParseOneStmt(sql, "", "")
+	util.ParserPool.Put(p)
 	if err != nil {
 		return err
 	}

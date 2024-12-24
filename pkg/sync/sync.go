@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"fmt"
 	"os"
 
 	"github.com/go-sql-driver/mysql"
@@ -14,6 +13,35 @@ import (
 	"go.uber.org/zap"
 )
 
+func CreateDatabase(
+	ctx context.Context,
+	db *sql.DB,
+	dbName string,
+	sql string,
+) error {
+	_, err := db.ExecContext(ctx, sql)
+	if err == nil {
+		return nil
+	}
+
+	// when error happens, we check if the database is created before
+	util.Logger.Warn(
+		"create database failed, will check if the same database is created before",
+		zap.String("sql", sql),
+		zap.Error(err))
+	database, err2 := source.ReadCreateDatabase(ctx, db, dbName)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	if sql == database {
+		return nil
+	}
+	return errors.Annotatef(err,
+		"create database failed and the same database is not created before. sql: %s",
+		sql,
+	)
+}
+
 func CreateTable(
 	ctx context.Context,
 	db *sql.DB,
@@ -22,14 +50,13 @@ func CreateTable(
 ) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		// TODO(lance6716): use errors.Annotate
-		return fmt.Errorf("error when create table for %s.%s: %s", dbName, tableName, err)
+		return errors.Annotatef(err, "create table for %s.%s", dbName, tableName)
 	}
 	defer conn.Close()
 
 	_, err = conn.ExecContext(ctx, "USE "+dbName)
 	if err != nil {
-		return fmt.Errorf("error when create table for %s.%s: %s", dbName, tableName, err)
+		return errors.Annotatef(err, "create table for %s.%s", dbName, tableName)
 	}
 
 	_, err = conn.ExecContext(ctx, sql)
@@ -44,16 +71,16 @@ func CreateTable(
 		zap.String("table", tableName),
 		zap.String("sql", sql),
 		zap.Error(err))
-	sql2, err := source.ReadTableStructure(ctx, db, dbName, tableName)
-	if err != nil {
-		return errors.Trace(err)
+	sql2, err2 := source.ReadCreateTableOrView(ctx, db, dbName, tableName)
+	if err2 != nil {
+		return errors.Trace(err2)
 	}
 	if sql == sql2 {
 		return nil
 	}
-	return fmt.Errorf(
-		"create table failed and the same table is not created before. database: %s, table: %s, sql: %s, error: %s",
-		dbName, tableName, sql, err,
+	return errors.Annotatef(err,
+		"create table failed and the same table is not created before. database: %s, table: %s, sql: %s",
+		dbName, tableName, sql,
 	)
 }
 

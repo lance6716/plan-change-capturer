@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/util/texttree"
 )
@@ -126,9 +127,11 @@ func NewPlanFromQuery(
 	}
 	defer conn.Close()
 
-	_, err = conn.ExecContext(ctx, "USE "+dbName)
-	if err != nil {
-		return nil, errors.Annotatef(err, "failed to execute USE for database: %s, query: %s", dbName, query)
+	if dbName != "" {
+		_, err = conn.ExecContext(ctx, "USE "+dbName)
+		if err != nil {
+			return nil, errors.Annotatef(err, "failed to execute USE for database: %s, query: %s", dbName, query)
+		}
 	}
 
 	rows, err := conn.QueryContext(ctx, "EXPLAIN "+query)
@@ -137,42 +140,24 @@ func NewPlanFromQuery(
 	}
 	defer rows.Close()
 
-	columnNames, err := rows.Columns()
+	fields, allFound, err := util.ReadStrRowsByColumnName(rows, []string{"id", "task", "access object"})
 	if err != nil {
-		return nil, errors.Annotatef(err, "failed to get columns for database: %s, query: %s", dbName, query)
+		return nil, errors.Annotatef(err, "failed to read rows for database: %s, query: %s", dbName, query)
 	}
-	idColIdx := slices.Index(columnNames, "id")
-	if idColIdx == -1 {
-		return nil, errors.Errorf("column `id` not found in the result. columns: %v", columnNames)
-	}
-	taskColIdx := slices.Index(columnNames, "task")
-	if taskColIdx == -1 {
-		return nil, errors.Errorf("column `task` not found in the header. columns: %v", columnNames)
-	}
-	accessObjColIdx := slices.Index(columnNames, "access object")
-	if accessObjColIdx == -1 {
-		return nil, errors.Errorf("column `access object` not found in the header. columns: %v", columnNames)
-	}
-
-	result := make([][3]string, 0)
-	scanDest := make([]any, len(columnNames))
-	for i := range scanDest {
-		scanDest[i] = new(any)
-	}
-	var idCol, taskCol, accessObjCol string
-	scanDest[idColIdx] = &idCol
-	scanDest[taskColIdx] = &taskCol
-	scanDest[accessObjColIdx] = &accessObjCol
-	for rows.Next() {
-		err = rows.Scan(scanDest...)
-		if err != nil {
-			return nil, errors.Annotatef(err, "failed to scan row for database: %s, query: %s", dbName, query)
+	if !allFound {
+		columnNames, err2 := rows.Columns()
+		if err2 != nil {
+			return nil, errors.Annotatef(err2, "failed to get columns for database: %s, query: %s", dbName, query)
 		}
-		result = append(result, [3]string{idCol, taskCol, accessObjCol})
+		return nil, errors.Errorf("not all columns are found in the result. we need [id, task, access object], but got %v", columnNames)
 	}
 	if err = rows.Close(); err != nil {
-		return nil, errors.Annotatef(err, "failed to iterate rows for database: %s, query: %s", dbName, query)
+		return nil, errors.Annotatef(err, "failed to close rows for database: %s, query: %s", dbName, query)
 	}
 
+	result := make([][3]string, 0, len(fields))
+	for _, field := range fields {
+		result = append(result, [3]string{field[0], field[1], field[2]})
+	}
 	return newPlanFromSQLResultRow(result)
 }
