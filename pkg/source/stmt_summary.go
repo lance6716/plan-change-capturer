@@ -18,9 +18,8 @@ import (
 // INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY.
 type StmtSummary struct {
 	// fields from the table
-	Schema string
-	SQL    string
-	// TODO(lance6716): unreliable!!
+	Schema     string
+	SQL        string
 	TableNames [][2]string
 	PlanStr    string
 	SQLDigest  string
@@ -29,6 +28,9 @@ type StmtSummary struct {
 	// computed fields
 	HasParseError bool
 }
+
+// TODO(lance6716): can use statements_summary_evicted to calculate confidence
+// TODO(lance6716): query CLUSTER_STATEMENTS_SUMMARY to get real time data
 
 func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
@@ -52,17 +54,20 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 	var ret []StmtSummary
 	for rows.Next() {
 		var (
-			s          StmtSummary
-			tableNames sql.NullString
-			schema     sql.NullString
+			s                 StmtSummary
+			tableNames        sql.NullString
+			schema            sql.NullString
+			sqlMayHasBrackets string
 		)
-		err = rows.Scan(&schema, &s.SQL, &tableNames, &s.PlanStr, &s.SQLDigest, &s.PlanDigest)
+
+		err = rows.Scan(&schema, &sqlMayHasBrackets, &tableNames, &s.PlanStr, &s.SQLDigest, &s.PlanDigest)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
 		if schema.Valid {
 			s.Schema = schema.String
 		}
+		s.SQL = interpolateSQLMayHasBrackets(sqlMayHasBrackets, p)
 
 		stmt, err2 := p.ParseOneStmt(s.SQL, "", "")
 		if err2 != nil {
@@ -88,6 +93,34 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 	return ret, errors.Trace(rows.Err())
 }
 
+// interpolateSQLMayHasBrackets processed the SQL returned by TiDB like `SELECT
+// ... [arguments: (6249305, 6249404)]` to a valid SQL statement.
+func interpolateSQLMayHasBrackets(sqlMayHasBrackets string, p *parser.Parser) string {
+	_, err := p.ParseOneStmt(sqlMayHasBrackets, "", "")
+	if err == nil {
+		return sqlMayHasBrackets
+	}
+
+	// see (*PlanCacheParamList).String()
+	const argumentsPrefix = " [arguments: "
+	index := strings.Index(sqlMayHasBrackets, argumentsPrefix)
+	if index == -1 {
+		return sqlMayHasBrackets
+	}
+	lastIndex := strings.LastIndex(sqlMayHasBrackets, "]")
+	sql := sqlMayHasBrackets[:index]
+	argsStr := sqlMayHasBrackets[index+len(argumentsPrefix) : lastIndex]
+	if argsStr[0] == '(' {
+		// remove the first and last bracket
+		argsStr = argsStr[1 : len(argsStr)-1]
+	}
+	// TODO(lance6716): check different argument types can be handled correctly.
+	args := strings.Split(argsStr, ", ")
+	for _, arg := range args {
+		sql = strings.Replace(sql, "?", arg, 1)
+	}
+	return sql
+}
 func ReadCreateDatabase(
 	ctx context.Context,
 	db *sql.DB,

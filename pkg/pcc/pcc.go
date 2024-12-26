@@ -62,6 +62,7 @@ func run(cfg *Config) error {
 	defer newDB.Close()
 
 	mgr := filemgr.NewManager(cfg.WorkDir)
+	syncer := sync.NewSyncer(newDB)
 
 	oldCfg := &cfg.OldVersion
 
@@ -80,7 +81,7 @@ func run(cfg *Config) error {
 	// TODO(lance6716): error should not fail the whole process
 	for _, s := range summaries {
 		for _, table := range s.TableNames {
-			err2 := syncForTable(ctx, oldDB, newDB, table, s.Schema, mgr, oldCfg)
+			err2 := syncForTable(ctx, oldDB, table, s.Schema, syncer, mgr, oldCfg)
 			if err2 != nil {
 				return errors.Trace(err2)
 			}
@@ -95,6 +96,7 @@ func run(cfg *Config) error {
 			return errors.Trace(err2)
 		}
 
+		// TODO(lance6716): s.HasParseError?
 		reason, err2 := compare.CmpPlan(s.SQL, oldPlan, newPlan)
 		if err2 != nil {
 			return errors.Trace(err2)
@@ -140,9 +142,10 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 
 func syncForTable(
 	ctx context.Context,
-	oldDB, newDB *sql.DB,
+	oldDB *sql.DB,
 	table [2]string,
 	currDB string,
+	syncer *sync.Syncer,
 	mgr *filemgr.Manager,
 	oldCfg *TiDB,
 ) error {
@@ -175,7 +178,7 @@ func syncForTable(
 		if t == table {
 			continue
 		}
-		err = syncForTable(ctx, oldDB, newDB, t, currDB, mgr, oldCfg)
+		err = syncForTable(ctx, oldDB, t, currDB, syncer, mgr, oldCfg)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -196,15 +199,15 @@ func syncForTable(
 		return errors.Trace(err2)
 	}
 
-	err2 = sync.CreateDatabase(ctx, newDB, table[0], createDatabase)
+	err2 = syncer.CreateDatabase(ctx, table[0], createDatabase)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
-	err2 = sync.CreateTable(ctx, newDB, table[0], table[1], createTable)
+	err2 = syncer.CreateTable(ctx, table[0], table[1], createTable)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
-	err2 = sync.LoadStats(ctx, newDB, mgr.GetTableStatsPath(table[0], table[1]))
+	err2 = syncer.LoadStats(ctx, mgr.GetTableStatsPath(table[0], table[1]))
 	if err2 != nil {
 		return errors.Trace(err2)
 	}

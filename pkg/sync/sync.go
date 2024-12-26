@@ -13,13 +13,40 @@ import (
 	"go.uber.org/zap"
 )
 
-func CreateDatabase(
+// Syncer is used to sync the database / table structure and stats to the target
+// database.
+// TODO(lance6716): make it concurrent-safe.
+type Syncer struct {
+	db *sql.DB
+
+	createdDatabase map[string]struct{}
+	createdTable    map[string]map[string]struct{}
+	createdStats    map[string]struct{}
+}
+
+func NewSyncer(db *sql.DB) *Syncer {
+	return &Syncer{
+		db:              db,
+		createdDatabase: make(map[string]struct{}),
+		createdTable:    make(map[string]map[string]struct{}),
+		createdStats:    make(map[string]struct{}),
+	}
+}
+
+func (s *Syncer) CreateDatabase(
 	ctx context.Context,
-	db *sql.DB,
 	dbName string,
 	sql string,
-) error {
-	_, err := db.ExecContext(ctx, sql)
+) (err error) {
+	if _, ok := s.createdDatabase[dbName]; ok {
+		return nil
+	}
+	defer func() {
+		if err == nil {
+			s.createdDatabase[dbName] = struct{}{}
+		}
+	}()
+	_, err = s.db.ExecContext(ctx, sql)
 	if err == nil {
 		return nil
 	}
@@ -29,7 +56,7 @@ func CreateDatabase(
 		"create database failed, will check if the same database is created before",
 		zap.String("sql", sql),
 		zap.Error(err))
-	database, err2 := source.ReadCreateDatabase(ctx, db, dbName)
+	database, err2 := source.ReadCreateDatabase(ctx, s.db, dbName)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
@@ -42,13 +69,25 @@ func CreateDatabase(
 	)
 }
 
-func CreateTable(
+func (s *Syncer) CreateTable(
 	ctx context.Context,
-	db *sql.DB,
 	dbName, tableName string,
 	sql string,
-) error {
-	conn, err := db.Conn(ctx)
+) (err error) {
+	if _, ok := s.createdTable[dbName]; ok {
+		if _, ok2 := s.createdTable[dbName][tableName]; ok2 {
+			return nil
+		}
+	} else {
+		s.createdTable[dbName] = make(map[string]struct{})
+	}
+	defer func() {
+		if err == nil {
+			s.createdTable[dbName][tableName] = struct{}{}
+		}
+	}()
+
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return errors.Annotatef(err, "create table for %s.%s", dbName, tableName)
 	}
@@ -71,7 +110,7 @@ func CreateTable(
 		zap.String("table", tableName),
 		zap.String("sql", sql),
 		zap.Error(err))
-	sql2, err2 := source.ReadCreateTableOrView(ctx, db, dbName, tableName)
+	sql2, err2 := source.ReadCreateTableOrView(ctx, s.db, dbName, tableName)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
@@ -84,11 +123,18 @@ func CreateTable(
 	)
 }
 
-func LoadStats(
+func (s *Syncer) LoadStats(
 	ctx context.Context,
-	db *sql.DB,
 	statsPath string,
-) error {
+) (err error) {
+	if _, ok := s.createdStats[statsPath]; ok {
+		return nil
+	}
+	defer func() {
+		if err == nil {
+			s.createdStats[statsPath] = struct{}{}
+		}
+	}()
 	content, err := os.ReadFile(statsPath)
 	if err != nil {
 		return errors.Annotatef(err, "read stats file %s", statsPath)
@@ -97,6 +143,7 @@ func LoadStats(
 		return nil
 	}
 	mysql.RegisterLocalFile(statsPath)
-	_, err = db.ExecContext(ctx, "LOAD STATS '"+statsPath+"'")
+	defer mysql.DeregisterLocalFile(statsPath)
+	_, err = s.db.ExecContext(ctx, "LOAD STATS '"+statsPath+"'")
 	return errors.Annotatef(err, "load stats from %s", statsPath)
 }
