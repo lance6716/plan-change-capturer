@@ -98,3 +98,12 @@ func ReadStrRowsByColumnName(
 	}
 	return fields, true, nil
 }
+
+func IsMemOrSysTable(dbTable [2]string) bool {
+	upper := strings.ToUpper(dbTable[0])
+	return upper == "INFORMATION_SCHEMA" ||
+		upper == "PERFORMANCE_SCHEMA" ||
+		upper == "METRICS_SCHEMA" ||
+		upper == "MYSQL" ||
+		upper == "SYS"
+}

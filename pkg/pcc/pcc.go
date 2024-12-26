@@ -75,7 +75,12 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// TODO(lance6716): error should not fail the whole process
 	for _, s := range summaries {
-		for _, table := range s.TableNames {
+		err = syncForDB(ctx, oldDB, s.Schema, syncer, mgr)
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		for _, table := range s.TableNamesNeedToSync {
 			err2 := syncForTable(ctx, oldDB, table, s.Schema, syncer, mgr, oldCfg)
 			if err2 != nil {
 				return errors.Trace(err2)
@@ -91,8 +96,11 @@ func run(ctx context.Context, cfg *Config) error {
 			return errors.Trace(err2)
 		}
 
-		// TODO(lance6716): s.HasParseError?
-		reason, err2 := compare.CmpPlan(s.SQL, oldPlan, newPlan)
+		sql := s.SQL
+		if s.HasParseError {
+			sql = ""
+		}
+		reason, err2 := compare.CmpPlan(sql, oldPlan, newPlan)
 		if err2 != nil {
 			return errors.Trace(err2)
 		}
@@ -117,6 +125,8 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 			net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port)),
 		)
 	}
+	oldDB.SetMaxOpenConns(oldCfg.MaxConn)
+
 	newCfg := &cfg.NewVersion
 	newDB, err := util.ConnectDB(newCfg.Host, newCfg.Port, newCfg.User, newCfg.Password)
 	if err != nil {
@@ -131,8 +141,34 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 	if err != nil {
 		return nil, nil, errors.Annotate(err, "disable auto analyze for new version DB")
 	}
+	newDB.SetMaxOpenConns(newCfg.MaxConn)
 
 	return oldDB, newDB, nil
+}
+
+func syncForDB(
+	ctx context.Context,
+	oldDB *sql.DB,
+	dbName string,
+	syncer *sync.Syncer,
+	mgr *filemgr.Manager,
+) error {
+	// TODO(lance6716): skip read structure if we already have it
+	createDatabase, err2 := source.ReadCreateDatabase(ctx, oldDB, dbName)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+	err2 = mgr.WriteDatabaseStructure(dbName, createDatabase)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
+	err2 = syncer.CreateDatabase(ctx, dbName, createDatabase)
+	if err2 != nil {
+		return errors.Trace(err2)
+	}
+
+	return nil
 }
 
 func syncForTable(

@@ -19,12 +19,14 @@ var (
 					User:       oldVersionUser,
 					Password:   oldVersionPassword,
 					StatusPort: oldVersionStatusPort,
+					MaxConn:    oldVersionMaxConn,
 				},
 				NewVersion: pcc.TiDB{
 					Host:     newVersionHost,
 					Port:     newVersionPort,
 					User:     newVersionUser,
 					Password: newVersionPassword,
+					MaxConn:  newVersionMaxConn,
 				},
 			})
 		},
@@ -46,11 +48,13 @@ var (
 	oldVersionUser       string
 	oldVersionPassword   string
 	oldVersionStatusPort int
+	oldVersionMaxConn    int
 
 	newVersionHost     string
 	newVersionPort     int
 	newVersionUser     string
 	newVersionPassword string
+	newVersionMaxConn  int
 )
 
 func init() {
@@ -62,8 +66,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&oldVersionUser, "old-user", "root", "old version user")
 	rootCmd.PersistentFlags().StringVar(&oldVersionPassword, "old-password", "", "old version password")
 	rootCmd.PersistentFlags().IntVar(&oldVersionStatusPort, "old-status-port", 10080, "old version status port")
+	rootCmd.PersistentFlags().IntVar(&oldVersionMaxConn, "old-max-conn", 4, "old version max connections")
+
 	rootCmd.PersistentFlags().StringVar(&newVersionHost, "new-host", "", "new version host")
 	rootCmd.PersistentFlags().IntVar(&newVersionPort, "new-port", 4001, "new version port")
 	rootCmd.PersistentFlags().StringVar(&newVersionUser, "new-user", "root", "new version user")
 	rootCmd.PersistentFlags().StringVar(&newVersionPassword, "new-password", "", "new version password")
+	rootCmd.PersistentFlags().IntVar(&newVersionMaxConn, "new-max-conn", 128, "new version max connections")
 }

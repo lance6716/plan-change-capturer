@@ -19,6 +19,7 @@ type TiDB struct {
 	User       string
 	Password   string
 	StatusPort int
+	MaxConn    int
 }
 
 type Log struct {
@@ -32,5 +33,3 @@ func (c *Config) ensureDefaults() {
 		c.WorkDir = path.Join(os.TempDir(), defaultWorkSubDir)
 	}
 }
-
-// TODO(lance6716): logger

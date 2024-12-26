@@ -22,10 +22,12 @@ func CmpPlan(sql string, a, b *plan.Op) (Result, error) {
 	// projection will not affect the performance, so we remove it before comparing.
 	removeProj(a)
 	removeProj(b)
-	err := normalizeTableNameAlias(sql, a, b)
-	if err != nil {
-		// TODO(lance6716): we can ignore the error?
-		return Diff, err
+	if sql != "" {
+		err := normalizeTableNameAlias(sql, a, b)
+		if err != nil {
+			// TODO(lance6716): we can ignore the error?
+			return Diff, err
+		}
 	}
 	return cmpPlan(a, b), nil
 }

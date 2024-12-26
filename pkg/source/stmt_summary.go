@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -18,12 +19,12 @@ import (
 // INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY.
 type StmtSummary struct {
 	// fields from the table
-	Schema     string
-	SQL        string
-	TableNames [][2]string
-	PlanStr    string
-	SQLDigest  string
-	PlanDigest string
+	Schema               string
+	SQL                  string
+	TableNamesNeedToSync [][2]string
+	PlanStr              string
+	SQLDigest            string
+	PlanDigest           string
 
 	// computed fields
 	HasParseError bool
@@ -73,21 +74,27 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 		if err2 != nil {
 			s.HasParseError = true
 		} else {
-			s.TableNames = util.ExtractTableNames(stmt, s.Schema)
+			s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
+			// skip simple SELECT without accessing any table
+			if len(s.TableNamesNeedToSync) == 0 {
+				continue
+			}
 		}
 
 		if s.HasParseError && len(tableNames.String) > 0 {
 			tables := strings.Split(tableNames.String, ",")
-			s.TableNames = make([][2]string, 0, len(tables))
+			s.TableNamesNeedToSync = make([][2]string, 0, len(tables))
 			for _, table := range tables {
 				dbAndTable := strings.Split(table, ".")
 				if len(dbAndTable) != 2 {
 					return nil, errors.Errorf("invalid table name, expected 2 fields after split on `.` : %s", table)
 				}
-				s.TableNames = append(s.TableNames, [2]string{dbAndTable[0], dbAndTable[1]})
+				s.TableNamesNeedToSync = append(s.TableNamesNeedToSync, [2]string{dbAndTable[0], dbAndTable[1]})
 			}
 		}
 
+		// filter synchronize system tables
+		s.TableNamesNeedToSync = slices.DeleteFunc(s.TableNamesNeedToSync, util.IsMemOrSysTable)
 		ret = append(ret, s)
 	}
 	return ret, errors.Trace(rows.Err())
@@ -197,7 +204,7 @@ func ReadTableStats(
 		return "", fmt.Errorf("error when request URL (%s): %s", url, err)
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("error when request URL (%s): HTTP status not 200, got %d", addr, resp.StatusCode)
+		return "", fmt.Errorf("error when request URL (%s): HTTP status not 200, got %d", url, resp.StatusCode)
 	}
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
