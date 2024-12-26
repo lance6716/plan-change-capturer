@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+
 	"github.com/lance6716/plan-change-capturer/pkg/pcc"
 	"github.com/spf13/cobra"
 )
@@ -9,8 +11,8 @@ var (
 	rootCmd = &cobra.Command{
 		Use:   "plan-change-capturer",
 		Short: "A tool used to capture plan changes among different versions of TiDB",
-		Run: func(*cobra.Command, []string) {
-			pcc.Run(&pcc.Config{
+		RunE: func(c *cobra.Command, _ []string) error {
+			return pcc.Run(c.Context(), &pcc.Config{
 				OldVersion: pcc.TiDB{
 					Host:       oldVersionHost,
 					Port:       oldVersionPort,
@@ -26,12 +28,14 @@ var (
 				},
 			})
 		},
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 )
 
 // Execute executes the root command.
-func Execute() error {
-	return rootCmd.Execute()
+func Execute(ctx context.Context) error {
+	return rootCmd.ExecuteContext(ctx)
 }
 
 var (

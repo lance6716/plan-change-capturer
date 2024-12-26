@@ -20,17 +20,14 @@ import (
 )
 
 // Run is the main entry function of the pcc logic.
-func Run(cfg *Config) {
+func Run(ctx context.Context, cfg *Config) error {
 	cfg.ensureDefaults()
 	if err := initLogger(&cfg.Log); err != nil {
 		util.Logger.Error("failed to initialize logger", zap.Error(err))
 	}
 	defer util.Logger.Sync()
 
-	err := run(cfg)
-	if err != nil {
-		util.Logger.Error("failed to run pcc", zap.Error(err))
-	}
+	return run(ctx, cfg)
 }
 
 // initLogger initializes the logger for the process. The default logger writes
@@ -51,9 +48,7 @@ func initLogger(loggerCfg *Log) error {
 	return nil
 }
 
-func run(cfg *Config) error {
-	ctx := context.Background()
-
+func run(ctx context.Context, cfg *Config) error {
 	oldDB, newDB, err := prepareDBConnections(ctx, cfg)
 	if err != nil {
 		return errors.Trace(err)
