@@ -75,10 +75,6 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 			s.HasParseError = true
 		} else {
 			s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
-			// skip simple SELECT without accessing any table
-			if len(s.TableNamesNeedToSync) == 0 {
-				continue
-			}
 		}
 
 		if s.HasParseError && len(tableNames.String) > 0 {
@@ -95,6 +91,10 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 
 		// filter synchronize system tables
 		s.TableNamesNeedToSync = slices.DeleteFunc(s.TableNamesNeedToSync, util.IsMemOrSysTable)
+		// skip simple SELECT without accessing any user table
+		if len(s.TableNamesNeedToSync) == 0 {
+			continue
+		}
 		ret = append(ret, s)
 	}
 	return ret, errors.Trace(rows.Err())

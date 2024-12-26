@@ -10,8 +10,8 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/compare"
 	"github.com/lance6716/plan-change-capturer/pkg/filemgr"
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
+	"github.com/lance6716/plan-change-capturer/pkg/schema"
 	"github.com/lance6716/plan-change-capturer/pkg/source"
-	"github.com/lance6716/plan-change-capturer/pkg/sync"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -57,7 +57,7 @@ func run(ctx context.Context, cfg *Config) error {
 	defer newDB.Close()
 
 	mgr := filemgr.NewManager(cfg.WorkDir)
-	syncer := sync.NewSyncer(newDB)
+	syncer := schema.NewSyncer(newDB)
 
 	oldCfg := &cfg.OldVersion
 
@@ -74,6 +74,7 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 
 	// TODO(lance6716): error should not fail the whole process
+	// eg, the table is dropped
 	for _, s := range summaries {
 		err = syncForDB(ctx, oldDB, s.Schema, syncer, mgr)
 		if err != nil {
@@ -87,11 +88,11 @@ func run(ctx context.Context, cfg *Config) error {
 			}
 		}
 
-		oldPlan, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
+		oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
 		if err2 != nil {
 			return errors.Trace(err2)
 		}
-		newPlan, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
+		newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
 		if err2 != nil {
 			return errors.Trace(err2)
 		}
@@ -109,6 +110,16 @@ func run(ctx context.Context, cfg *Config) error {
 			zap.String("reason", string(reason)),
 			zap.String("sql", s.SQL),
 		)
+		result := compare.PlanCmpResult{
+			Result:         reason,
+			OldVersionInfo: &s,
+			OldPlan:        oldPlanStr,
+			NewDiffPlan:    newPlanStr,
+		}
+		err2 = mgr.WriteResult(result)
+		if err2 != nil {
+			return errors.Trace(err2)
+		}
 	}
 	return nil
 }
@@ -150,10 +161,17 @@ func syncForDB(
 	ctx context.Context,
 	oldDB *sql.DB,
 	dbName string,
-	syncer *sync.Syncer,
+	syncer *schema.Syncer,
 	mgr *filemgr.Manager,
 ) error {
-	// TODO(lance6716): skip read structure if we already have it
+	if dbName == "" {
+		return nil
+	}
+	if util.IsMemOrSysTable([2]string{dbName, ""}) {
+		return nil
+	}
+
+	// TODO(lance6716): skip read structure if we already have it?
 	createDatabase, err2 := source.ReadCreateDatabase(ctx, oldDB, dbName)
 	if err2 != nil {
 		return errors.Trace(err2)
@@ -171,12 +189,13 @@ func syncForDB(
 	return nil
 }
 
+// TODO(lance6716): test sync user memory table and sequence
 func syncForTable(
 	ctx context.Context,
 	oldDB *sql.DB,
 	table [2]string,
 	currDB string,
-	syncer *sync.Syncer,
+	syncer *schema.Syncer,
 	mgr *filemgr.Manager,
 	oldCfg *TiDB,
 ) error {

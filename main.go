@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/lance6716/plan-change-capturer/cmd"
+	"github.com/lance6716/plan-change-capturer/pkg/util"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -31,7 +33,7 @@ func main() {
 		if errors.Is(err, context.Canceled) {
 			fmt.Printf("cancel pcc by user signal %s\n", sig.String())
 		} else {
-			panic(err)
+			util.Logger.Fatal("failed to execute pcc", zap.Error(err))
 		}
 	}
 }
