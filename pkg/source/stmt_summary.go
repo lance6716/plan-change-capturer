@@ -33,7 +33,7 @@ type StmtSummary struct {
 // TODO(lance6716): can use statements_summary_evicted to calculate confidence
 // TODO(lance6716): query CLUSTER_STATEMENTS_SUMMARY to get real time data
 
-func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
+func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
 	// TODO(lance6716): pagination
 	// rely on the ast.GetStmtLabel function to filter out non-select statements
@@ -52,7 +52,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 	p := util.ParserPool.Get().(*parser.Parser)
 	defer util.ParserPool.Put(p)
 
-	var ret []StmtSummary
+	var ret []*StmtSummary
 	for rows.Next() {
 		var (
 			s                 StmtSummary
@@ -95,7 +95,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]StmtSummary, error) {
 		if len(s.TableNamesNeedToSync) == 0 {
 			continue
 		}
-		ret = append(ret, s)
+		ret = append(ret, &s)
 	}
 	return ret, errors.Trace(rows.Err())
 }
@@ -127,65 +127,6 @@ func interpolateSQLMayHasBrackets(sqlMayHasBrackets string, p *parser.Parser) st
 		sql = strings.Replace(sql, "?", arg, 1)
 	}
 	return sql
-}
-func ReadCreateDatabase(
-	ctx context.Context,
-	db *sql.DB,
-	dbName string,
-) (string, error) {
-	escapedDBName := util.EscapeIdentifier(dbName)
-	query := "SHOW CREATE DATABASE " + escapedDBName
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return "", errors.Annotatef(err, "failed to execute query: %s", query)
-	}
-	defer rows.Close()
-
-	create, allFound, err := util.ReadStrRowsByColumnName(rows, []string{"Create Database"})
-	if err != nil {
-		return "", errors.Trace(err)
-	}
-	if allFound {
-		return create[0][0], nil
-	}
-	return "", errors.Errorf("failed to find create database statement for %s", escapedDBName)
-}
-
-// ReadCreateTableOrView reads the CREATE TABLE / VIEW statement from the database.
-func ReadCreateTableOrView(
-	ctx context.Context,
-	db *sql.DB,
-	dbName, tableOrViewName string,
-) (string, error) {
-	escapedDBName := util.EscapeIdentifier(dbName)
-	escapedTable := util.EscapeIdentifier(tableOrViewName)
-	query := "SHOW CREATE TABLE " + escapedDBName + "." + escapedTable
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return "", errors.Annotatef(err, "failed to execute query: %s", query)
-	}
-	defer rows.Close()
-
-	create, allFound, err := util.ReadStrRowsByColumnName(rows, []string{"Create Table"})
-	if err != nil {
-		return "", errors.Trace(err)
-	}
-	if allFound {
-		return create[0][0], nil
-	}
-	// TODO(lance6716): remove DEFINER?
-	create, allFound, err = util.ReadStrRowsByColumnName(rows, []string{"Create View"})
-	if err != nil {
-		return "", errors.Trace(err)
-	}
-	if allFound {
-		return create[0][0], nil
-	}
-	columnNames, err := rows.Columns()
-	if err != nil {
-		return "", errors.Annotatef(err, "failed to get columns for query: %s", query)
-	}
-	return "", errors.Errorf("failed to find create table or view statement for %s.%s, got columns %v", escapedDBName, escapedTable, columnNames)
 }
 
 func ReadTableStats(

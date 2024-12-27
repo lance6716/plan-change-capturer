@@ -36,7 +36,7 @@ func NewManager(workDir string) *Manager {
 }
 
 // WriteStmtSummary writes the statement summary to the file.
-func (m *Manager) WriteStmtSummary(s source.StmtSummary) error {
+func (m *Manager) WriteStmtSummary(s *source.StmtSummary) error {
 	dir := path.Join(m.workDir, stmtSummaryDir)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
@@ -79,7 +79,7 @@ func (m *Manager) WriteTableStats(db, table string, json string) error {
 }
 
 // WriteResult writes the comparison result to the file.
-func (m *Manager) WriteResult(r compare.PlanCmpResult) error {
+func (m *Manager) WriteResult(r *compare.PlanCmpResult) error {
 	dir := path.Join(m.workDir, resultSubDir)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)

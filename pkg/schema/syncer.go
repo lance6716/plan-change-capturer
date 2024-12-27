@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/lance6716/plan-change-capturer/pkg/source"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"go.uber.org/zap"
@@ -56,7 +55,7 @@ func (s *Syncer) CreateDatabase(
 		"create database failed, will check if the same database is created before",
 		zap.String("sql", sql),
 		zap.Error(err))
-	database, err2 := source.ReadCreateDatabase(ctx, s.db, dbName)
+	database, err2 := util.ReadCreateDatabase(ctx, s.db, dbName)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
@@ -110,7 +109,7 @@ func (s *Syncer) CreateTable(
 		zap.String("table", tableName),
 		zap.String("sql", sql),
 		zap.Error(err))
-	sql2, err2 := source.ReadCreateTableOrView(ctx, s.db, dbName, tableName)
+	sql2, err2 := util.ReadCreateTableOrView(ctx, s.db, dbName, tableName)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}

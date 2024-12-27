@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"flag"
-	"strconv"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/tidb/pkg/parser"
 	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
 	"github.com/stretchr/testify/require"
@@ -32,18 +31,11 @@ func TestReadStmtSummary(t *testing.T) {
 		t.Skip("test disabled")
 	}
 
-	c, err := mysql.NewConnector(&mysql.Config{
-		User:                 *testUser,
-		Passwd:               *testPassword,
-		Addr:                 *testHost + ":" + strconv.Itoa(*testPort),
-		AllowNativePasswords: true,
-		Collation:            "utf8mb4_general_ci",
-	})
+	db, err := util.ConnectDB(*testHost, *testPort, *testUser, *testPassword)
 	require.NoError(t, err)
-	db := sql.OpenDB(c)
 	defer db.Close()
-	ctx := context.Background()
 
+	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	require.NoError(t, err)
 	defer conn.Close()

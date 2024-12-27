@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/lance6716/plan-change-capturer/pkg/compare"
 	"github.com/lance6716/plan-change-capturer/pkg/filemgr"
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
@@ -76,49 +77,10 @@ func run(ctx context.Context, cfg *Config) error {
 	// TODO(lance6716): error should not fail the whole process
 	// eg, the table is dropped
 	for _, s := range summaries {
-		err = syncForDB(ctx, oldDB, s.Schema, syncer, mgr)
+		result := cmpPlan(ctx, s, oldDB, newDB, syncer, mgr, oldCfg)
+		err = mgr.WriteResult(result)
 		if err != nil {
 			return errors.Trace(err)
-		}
-
-		for _, table := range s.TableNamesNeedToSync {
-			err2 := syncForTable(ctx, oldDB, table, s.Schema, syncer, mgr, oldCfg)
-			if err2 != nil {
-				return errors.Trace(err2)
-			}
-		}
-
-		oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
-		if err2 != nil {
-			return errors.Trace(err2)
-		}
-		newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
-		if err2 != nil {
-			return errors.Trace(err2)
-		}
-
-		sql := s.SQL
-		if s.HasParseError {
-			sql = ""
-		}
-		reason, err2 := compare.CmpPlan(sql, oldPlan, newPlan)
-		if err2 != nil {
-			return errors.Trace(err2)
-		}
-
-		util.Logger.Info("compare result",
-			zap.String("reason", string(reason)),
-			zap.String("sql", s.SQL),
-		)
-		result := compare.PlanCmpResult{
-			Result:         reason,
-			OldVersionInfo: &s,
-			OldPlan:        oldPlanStr,
-			NewDiffPlan:    newPlanStr,
-		}
-		err2 = mgr.WriteResult(result)
-		if err2 != nil {
-			return errors.Trace(err2)
 		}
 	}
 	return nil
@@ -157,6 +119,82 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 	return oldDB, newDB, nil
 }
 
+// cmpPlan returns the compare result of the plan. When it meets an error, it
+// will check if the error is transient or not. If it is transient, it will
+// return nil PlanCmpResult to expect the caller to retry at the next interval
+// Otherwise, it will write the error to PlanCmpResult.ErrMsg and return it.
+func cmpPlan(
+	ctx context.Context,
+	s *source.StmtSummary,
+	oldDB *sql.DB,
+	newDB *sql.DB,
+	syncer *schema.Syncer,
+	mgr *filemgr.Manager,
+	oldCfg *TiDB,
+) *compare.PlanCmpResult {
+	ret := &compare.PlanCmpResult{
+		Result:         compare.Unknown,
+		OldVersionInfo: s,
+	}
+
+	err := syncForDB(ctx, oldDB, s.Schema, syncer, mgr)
+	if err != nil {
+		// TODO(lance6716): check everywhere, log error even if it is retryable
+		util.Logger.Error("sync database failed", zap.Error(err))
+		if util.IsUnretryableError(err) {
+			ret.ErrMsg = err.Error()
+			return ret
+		}
+		return nil
+	}
+
+	for _, table := range s.TableNamesNeedToSync {
+		err2 := syncForTable(ctx, oldDB, table, s.Schema, syncer, mgr, oldCfg)
+		if err2 != nil {
+			util.Logger.Error("sync table failed", zap.Error(err2))
+			if util.IsUnretryableError(err) {
+				ret.ErrMsg = err.Error()
+				return ret
+			}
+			return nil
+		}
+	}
+
+	oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
+	if err2 != nil {
+		ret.ErrMsg = err2.Error()
+		return ret
+	}
+	ret.OldPlan = oldPlanStr
+	newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
+	if err2 != nil {
+		util.Logger.Error("get new plan failed", zap.Error(err2))
+		return nil
+	}
+	ret.NewDiffPlan = newPlanStr
+
+	sql := s.SQL
+	if s.HasParseError {
+		sql = ""
+	}
+	reason, err2 := compare.CmpPlan(sql, oldPlan, newPlan)
+	if err2 != nil {
+		ret.ErrMsg = err2.Error()
+		return ret
+	}
+	ret.Result = reason
+	if reason == compare.Same {
+		ret.NewDiffPlan = ""
+	}
+
+	util.Logger.Info("compare result",
+		zap.String("reason", string(reason)),
+		zap.String("sql", s.SQL),
+	)
+
+	return ret
+}
+
 func syncForDB(
 	ctx context.Context,
 	oldDB *sql.DB,
@@ -172,8 +210,11 @@ func syncForDB(
 	}
 
 	// TODO(lance6716): skip read structure if we already have it?
-	createDatabase, err2 := source.ReadCreateDatabase(ctx, oldDB, dbName)
+	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, dbName)
 	if err2 != nil {
+		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
+			err2 = util.WrapUnretryableError(err2)
+		}
 		return errors.Trace(err2)
 	}
 	err2 = mgr.WriteDatabaseStructure(dbName, createDatabase)
@@ -199,8 +240,11 @@ func syncForTable(
 	mgr *filemgr.Manager,
 	oldCfg *TiDB,
 ) error {
-	createDatabase, err2 := source.ReadCreateDatabase(ctx, oldDB, table[0])
+	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, table[0])
 	if err2 != nil {
+		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
+			err2 = util.WrapUnretryableError(err2)
+		}
 		return errors.Trace(err2)
 	}
 	err2 = mgr.WriteDatabaseStructure(table[0], createDatabase)
@@ -208,7 +252,7 @@ func syncForTable(
 		return errors.Trace(err2)
 	}
 
-	createTable, err2 := source.ReadCreateTableOrView(ctx, oldDB, table[0], table[1])
+	createTable, err2 := util.ReadCreateTableOrView(ctx, oldDB, table[0], table[1])
 	if err2 != nil {
 		return errors.Trace(err2)
 	}

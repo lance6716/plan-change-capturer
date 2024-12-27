@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"database/sql"
 	"net"
 	"slices"
@@ -106,4 +107,63 @@ func IsMemOrSysTable(dbTable [2]string) bool {
 		upper == "METRICS_SCHEMA" ||
 		upper == "MYSQL" ||
 		upper == "SYS"
+}
+func ReadCreateDatabase(
+	ctx context.Context,
+	db *sql.DB,
+	dbName string,
+) (string, error) {
+	escapedDBName := EscapeIdentifier(dbName)
+	query := "SHOW CREATE DATABASE " + escapedDBName
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", errors.Annotatef(err, "failed to execute query: %s", query)
+	}
+	defer rows.Close()
+
+	create, allFound, err := ReadStrRowsByColumnName(rows, []string{"Create Database"})
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if allFound {
+		return create[0][0], nil
+	}
+	return "", errors.Errorf("failed to find create database statement for %s", escapedDBName)
+}
+
+// ReadCreateTableOrView reads the CREATE TABLE / VIEW statement from the database.
+func ReadCreateTableOrView(
+	ctx context.Context,
+	db *sql.DB,
+	dbName, tableOrViewName string,
+) (string, error) {
+	escapedDBName := EscapeIdentifier(dbName)
+	escapedTable := EscapeIdentifier(tableOrViewName)
+	query := "SHOW CREATE TABLE " + escapedDBName + "." + escapedTable
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", errors.Annotatef(err, "failed to execute query: %s", query)
+	}
+	defer rows.Close()
+
+	create, allFound, err := ReadStrRowsByColumnName(rows, []string{"Create Table"})
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if allFound {
+		return create[0][0], nil
+	}
+	// TODO(lance6716): remove DEFINER?
+	create, allFound, err = ReadStrRowsByColumnName(rows, []string{"Create View"})
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if allFound {
+		return create[0][0], nil
+	}
+	columnNames, err := rows.Columns()
+	if err != nil {
+		return "", errors.Annotatef(err, "failed to get columns for query: %s", query)
+	}
+	return "", errors.Errorf("failed to find create table or view statement for %s.%s, got columns %v", escapedDBName, escapedTable, columnNames)
 }

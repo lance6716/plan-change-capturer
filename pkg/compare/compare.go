@@ -12,8 +12,9 @@ import (
 type Result string
 
 const (
-	Same Result = "same"
-	Diff        = "different"
+	Unknown        = "unknown"
+	Same    Result = "same"
+	Diff           = "different"
 )
 
 // CmpPlan compares two plan trees and returns the result. Please note that the
