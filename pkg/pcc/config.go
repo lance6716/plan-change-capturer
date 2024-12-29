@@ -2,11 +2,15 @@ package pcc
 
 import (
 	"os"
-	"path"
+	"path/filepath"
+	"time"
 )
 
 // Config is a static struct for pcc's configuration.
 type Config struct {
+	TaskName    string
+	Description string
+
 	OldVersion TiDB
 	NewVersion TiDB
 	WorkDir    string
@@ -29,7 +33,10 @@ type Log struct {
 const defaultWorkSubDir = "plan-change-capturer"
 
 func (c *Config) ensureDefaults() {
+	if c.TaskName == "" {
+		c.TaskName = time.Now().Format(time.RFC3339)
+	}
 	if c.WorkDir == "" {
-		c.WorkDir = path.Join(os.TempDir(), defaultWorkSubDir)
+		c.WorkDir = filepath.Join(os.TempDir(), defaultWorkSubDir)
 	}
 }

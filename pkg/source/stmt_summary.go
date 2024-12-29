@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
@@ -25,6 +26,8 @@ type StmtSummary struct {
 	PlanStr              string
 	SQLDigest            string
 	PlanDigest           string
+	ExecCount            int
+	SumLatency           time.Duration
 
 	// computed fields
 	HasParseError bool
@@ -39,7 +42,14 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 	// rely on the ast.GetStmtLabel function to filter out non-select statements
 	query := `
 		SELECT 
-    		SCHEMA_NAME, QUERY_SAMPLE_TEXT, TABLE_NAMES, PLAN, DIGEST, PLAN_DIGEST
+    		SCHEMA_NAME, 
+    		QUERY_SAMPLE_TEXT, 
+    		TABLE_NAMES, 
+    		PLAN, 
+    		DIGEST, 
+    		PLAN_DIGEST,
+    		EXEC_COUNT,
+    		SUM_LATENCY
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
 		WHERE EXEC_COUNT > 1 AND STMT_TYPE = 'Select'`
 	rows, err := db.QueryContext(ctx, query)
@@ -59,9 +69,19 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			tableNames        sql.NullString
 			schema            sql.NullString
 			sqlMayHasBrackets string
+			sumLatencyNanoSec int64
 		)
 
-		err = rows.Scan(&schema, &sqlMayHasBrackets, &tableNames, &s.PlanStr, &s.SQLDigest, &s.PlanDigest)
+		err = rows.Scan(
+			&schema,
+			&sqlMayHasBrackets,
+			&tableNames,
+			&s.PlanStr,
+			&s.SQLDigest,
+			&s.PlanDigest,
+			&s.ExecCount,
+			&sumLatencyNanoSec,
+		)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -69,6 +89,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			s.Schema = schema.String
 		}
 		s.SQL = interpolateSQLMayHasBrackets(sqlMayHasBrackets, p)
+		s.SumLatency = time.Duration(sumLatencyNanoSec)
 
 		stmt, err2 := p.ParseOneStmt(s.SQL, "", "")
 		if err2 != nil {

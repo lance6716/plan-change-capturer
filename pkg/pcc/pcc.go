@@ -1,16 +1,22 @@
 package pcc
 
 import (
+	"container/heap"
 	"context"
 	"database/sql"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lance6716/plan-change-capturer/pkg/compare"
 	"github.com/lance6716/plan-change-capturer/pkg/filemgr"
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
+	"github.com/lance6716/plan-change-capturer/pkg/report"
 	"github.com/lance6716/plan-change-capturer/pkg/schema"
 	"github.com/lance6716/plan-change-capturer/pkg/source"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
@@ -50,6 +56,8 @@ func initLogger(loggerCfg *Log) error {
 }
 
 func run(ctx context.Context, cfg *Config) error {
+	util.Logger.Info("start to run pcc", zap.Any("config", cfg))
+	start := time.Now().Format(time.RFC3339)
 	oldDB, newDB, err := prepareDBConnections(ctx, cfg)
 	if err != nil {
 		return errors.Trace(err)
@@ -74,16 +82,94 @@ func run(ctx context.Context, cfg *Config) error {
 		}
 	}
 
-	// TODO(lance6716): error should not fail the whole process
-	// eg, the table is dropped
+	allResults := make([]*compare.PlanCmpResult, 0, len(summaries))
 	for _, s := range summaries {
 		result := cmpPlan(ctx, s, oldDB, newDB, syncer, mgr, oldCfg)
+		allResults = append(allResults, result)
+	}
+
+	waitRetry := make([]*compare.PlanCmpResult, 0, len(summaries))
+	waitRetryExecCount := 0
+	errResults := make([]*compare.PlanCmpResult, 0, len(summaries))
+	errResultsExecCount := 0
+	cmpSameResults := make([]*compare.PlanCmpResult, 0, len(summaries))
+	cmpSamerResultsExecCount := 0
+	cmpDiffResults := make([]*compare.PlanCmpResult, 0, len(summaries))
+	cmpDiffResultsExecCount := 0
+	for _, result := range allResults {
+		s := result.OldVersionInfo
+		switch result.Result {
+		case compare.Unknown:
+			if result.ErrMsg == "" {
+				// retryable error
+				waitRetry = append(waitRetry, result)
+				waitRetryExecCount += s.ExecCount
+				continue
+			}
+			errResults = append(errResults, result)
+			errResultsExecCount += s.ExecCount
+		case compare.Same:
+			cmpSameResults = append(cmpSameResults, result)
+			cmpSamerResultsExecCount += s.ExecCount
+		case compare.Diff:
+			cmpDiffResults = append(cmpDiffResults, result)
+			cmpDiffResultsExecCount += s.ExecCount
+		}
+
 		err = mgr.WriteResult(result)
 		if err != nil {
 			return errors.Trace(err)
 		}
 	}
-	return nil
+
+	host, err := os.Hostname()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	lastUpdated := time.Now().Format(time.RFC3339)
+	r := &report.Report{
+		TaskInfoItems: [][2]string{
+			{"Task Name", cfg.TaskName},
+			{"Task Owner", os.Getenv("USER")},
+			{"Task Host", host},
+			{"Description", cfg.Description},
+		},
+		WorkloadInfoItems: [][2]string{
+			{"Old Version TiDB Address", net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port))},
+			{"Old Version TiDB User", oldCfg.User},
+			{"Capture Method", "Statement Summary"},
+			{"Total SQL Statement Count", strconv.Itoa(len(summaries))},
+		},
+		ExecutionInfoItems: [][2]string{
+			{"Started", start},
+			{"Last Updated", lastUpdated},
+			{"Global Time Limit", "UNLIMITED"},
+			{"Per-SQL Time Limit", "UNUSED"},
+			{"Status", "Completed"},
+			{"Number of Unsupported SQLs", "0"},
+			{"Number of Error", strconv.Itoa(len(errResults) + len(waitRetry))},
+			{"Number of Successful", strconv.Itoa(len(cmpSameResults) + len(cmpDiffResults))},
+		},
+		Summary: report.Summary{
+			Overall: report.ChangeCount{
+				SQL:  waitRetryExecCount + errResultsExecCount + cmpSamerResultsExecCount + cmpDiffResultsExecCount,
+				Plan: len(waitRetry) + len(errResults) + len(cmpSameResults) + len(cmpDiffResults),
+			},
+			Unchanged: report.ChangeCount{
+				SQL:  cmpSamerResultsExecCount,
+				Plan: len(cmpSameResults),
+			},
+			MayDegraded: report.ChangeCount{
+				SQL:  cmpDiffResultsExecCount,
+				Plan: len(cmpDiffResults),
+			},
+			Errors: report.ChangeCount{
+				SQL:  errResultsExecCount + waitRetryExecCount,
+				Plan: len(errResults) + len(waitRetry),
+			},
+		},
+	}
+	return report.Render(r, filepath.Join(cfg.WorkDir, "report.html"))
 }
 
 // prepareDBConnections creates sql.DB to the old and new version databases. For
@@ -121,8 +207,9 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 
 // cmpPlan returns the compare result of the plan. When it meets an error, it
 // will check if the error is transient or not. If it is transient, it will
-// return nil PlanCmpResult to expect the caller to retry at the next interval
-// Otherwise, it will write the error to PlanCmpResult.ErrMsg and return it.
+// return PlanCmpResult with compare.Unknown result and empty ErrMsg to expect
+// the caller to retry at the next interval Otherwise, it will write the error to
+// PlanCmpResult.ErrMsg and return it.
 func cmpPlan(
 	ctx context.Context,
 	s *source.StmtSummary,
@@ -143,9 +230,8 @@ func cmpPlan(
 		util.Logger.Error("sync database failed", zap.Error(err))
 		if util.IsUnretryableError(err) {
 			ret.ErrMsg = err.Error()
-			return ret
 		}
-		return nil
+		return ret
 	}
 
 	for _, table := range s.TableNamesNeedToSync {
@@ -154,9 +240,8 @@ func cmpPlan(
 			util.Logger.Error("sync table failed", zap.Error(err2))
 			if util.IsUnretryableError(err) {
 				ret.ErrMsg = err.Error()
-				return ret
 			}
-			return nil
+			return ret
 		}
 	}
 
@@ -169,7 +254,8 @@ func cmpPlan(
 	newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
 	if err2 != nil {
 		util.Logger.Error("get new plan failed", zap.Error(err2))
-		return nil
+		// TODO(lance6716): check retryable
+		return ret
 	}
 	ret.NewDiffPlan = newPlanStr
 
@@ -307,4 +393,58 @@ func syncForTable(
 	}
 
 	return nil
+}
+
+type ResultHeap []*compare.PlanCmpResult
+
+func (r ResultHeap) Len() int {
+	return len(r)
+}
+
+func (r ResultHeap) Less(i, j int) bool {
+	return r[i].OldVersionInfo.SumLatency < r[j].OldVersionInfo.SumLatency
+}
+
+func (r ResultHeap) Swap(i, j int) {
+	r[i], r[j] = r[j], r[i]
+}
+
+func (r *ResultHeap) Push(x any) {
+	*r = append(*r, x.(*compare.PlanCmpResult))
+}
+
+func (r *ResultHeap) Pop() any {
+	old := *r
+	n := len(old)
+	x := old[n-1]
+	*r = old[0 : n-1]
+	return x
+}
+
+// topNSumLatencyPlans will not modify the input results, and return the sorted
+// results with the top N sum latency.
+func topNSumLatencyPlans(results []*compare.PlanCmpResult, n int) []*compare.PlanCmpResult {
+	if len(results) <= n {
+		ret := slices.Clone(results)
+		slices.SortFunc(ret, func(i, j *compare.PlanCmpResult) int {
+			return int(j.OldVersionInfo.SumLatency - i.OldVersionInfo.SumLatency)
+		})
+		return ret
+	}
+
+	// maintain a min heap to get N plan with largest SumLatency
+	h := make([]*compare.PlanCmpResult, n)
+	copy(h, results[:n])
+	heap.Init((*ResultHeap)(&h))
+	for _, r := range results[n:] {
+		if r.OldVersionInfo.SumLatency > h[0].OldVersionInfo.SumLatency {
+			h[0] = r
+			heap.Fix((*ResultHeap)(&h), 0)
+		}
+	}
+
+	slices.SortFunc(h, func(i, j *compare.PlanCmpResult) int {
+		return int(j.OldVersionInfo.SumLatency - i.OldVersionInfo.SumLatency)
+	})
+	return h
 }
