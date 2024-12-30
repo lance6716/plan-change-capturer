@@ -169,6 +169,46 @@ func run(ctx context.Context, cfg *Config) error {
 			},
 		},
 	}
+	topSQLs := topNSumLatencyPlans(allResults, 500)
+	r.TopSQLs = report.Table{
+		Header: []string{"DIGEST", "DIGEST_TEXT", "Source AVG_LATENCY", "Source EXEC_COUNT", "Target AVG_LATENCY", "Target EXEC_COUNT", "Plan change"},
+		Data:   make([][]string, 0, len(topSQLs)),
+	}
+	for _, result := range topSQLs {
+		s := result.OldVersionInfo
+		r.TopSQLs.Data = append(r.TopSQLs.Data, []string{
+			s.SQLDigest,
+			s.SQL,
+			(s.SumLatency / time.Duration(s.ExecCount)).String(),
+			strconv.Itoa(s.ExecCount),
+			"",
+			"",
+			string(result.Result),
+		})
+	}
+	r.Details = make([]report.Details, len(allResults))
+	for i, result := range allResults {
+		r.Details[i] = report.Details{
+			Header: "SQL Digest: " + result.OldVersionInfo.SQLDigest + " Plan Digest: " + result.OldVersionInfo.PlanDigest,
+			Labels: [][2]string{
+				{"Schema Name", result.OldVersionInfo.Schema},
+				{"SQL Text", result.OldVersionInfo.SQL},
+				{"Source AVG_LATENCY", (result.OldVersionInfo.SumLatency / time.Duration(result.OldVersionInfo.ExecCount)).String()},
+				{"Source EXEC_COUNT", strconv.Itoa(result.OldVersionInfo.ExecCount)},
+				{"Plan Change", string(result.Result)},
+			},
+			Source: &report.Plan{
+				Text: result.OldPlan,
+			},
+		}
+
+		if result.NewDiffPlan != "" {
+			r.Details[i].Target = &report.Plan{
+				Text: result.NewDiffPlan,
+			}
+		}
+	}
+
 	return report.Render(r, filepath.Join(cfg.WorkDir, "report.html"))
 }
 

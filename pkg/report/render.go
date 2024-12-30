@@ -12,6 +12,8 @@ type Report struct {
 	WorkloadInfoItems  [][2]string
 	ExecutionInfoItems [][2]string
 	Summary            Summary
+	TopSQLs            Table
+	Details            []Details
 }
 
 type Summary struct {
@@ -26,6 +28,23 @@ type Summary struct {
 type ChangeCount struct {
 	SQL  int
 	Plan int
+}
+
+type Table struct {
+	Header []string
+	Data   [][]string
+}
+
+type Details struct {
+	Header string
+	Labels [][2]string
+	Source *Plan
+	Target *Plan
+}
+
+type Plan struct {
+	Labels [][2]string
+	Text   string
 }
 
 func Render(r *Report, outFilename string) error {

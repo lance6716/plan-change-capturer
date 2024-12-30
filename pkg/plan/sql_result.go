@@ -73,7 +73,7 @@ func newPlanFromSQLResultRow(result [][3]string) (*Op, string, error) {
 		stack = append(stack, newOp)
 	}
 
-	return stack[0], strings.Join(planRows, "/n"), nil
+	return stack[0], strings.Join(planRows, "\n"), nil
 }
 
 func NewPlanFromStmtSummaryPlan(planStr string) (*Op, string, error) {

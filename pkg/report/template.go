@@ -59,5 +59,41 @@ const tpl = `
     <td>{{ .Summary.Unsupported.Plan }}</td>
    </tr>
   </table> 
+  <h2>Top 500 SQL Sorted by elapsed time and execution count:</h2>
+  <table>
+   <tr>
+    {{ range .TopSQLs.Header }}
+    <th>{{ . }}</th>
+    {{ end }}
+   </tr>
+   {{ range .TopSQLs.Data }}
+   <tr>
+    {{ range . }}
+    <td>{{ . }}</td>
+    {{ end }}
+   </tr>
+   {{ end }}
+  </table>
+  <h2>Details:</h2>
+  {{ range .Details }}
+  <h3>{{ .Header }}</h3>
+  {{ range .Labels }}
+  <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
+  {{ end }}
+  {{ if .Source }}
+  Source SQL Plan:<br>
+  {{ range .Source.Labels }}
+  <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
+  {{ end }}
+  <pre>{{ .Source.Text }}</pre>
+  {{ end }}
+  {{ if .Target }}
+  Target SQL Plan:<br>
+  {{ range .Target.Labels }}
+  <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
+  {{ end }}
+  <pre>{{ .Target.Text }}</pre>
+  {{ end }}
+  {{ end }}
  </body>
 </html>`
