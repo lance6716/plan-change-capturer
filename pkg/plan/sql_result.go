@@ -3,7 +3,6 @@ package plan
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -17,10 +16,12 @@ import (
 //
 // The input is a slice of [id, task, access object] fields or [id, task,
 // operator info] fields.
+//
+// Because this function can not attach enough information to error message,
+// caller should use errors.Annotatef to add more information.
 func newPlanFromSQLResultRow(result [][3]string) (*Op, string, error) {
-	// TODO(lance6716): check every error, attach enough information to them
 	if len(result) == 0 {
-		return nil, "", fmt.Errorf("input has zero length")
+		return nil, "", errors.Errorf("input has zero length")
 	}
 
 	stack := make([]*Op, 0, len(result)/2)
@@ -29,7 +30,7 @@ func newPlanFromSQLResultRow(result [][3]string) (*Op, string, error) {
 	for _, fields := range result {
 		idCol, taskCol, accessObjCol := fields[0], fields[1], fields[2]
 		if idCol == "" {
-			return nil, "", fmt.Errorf("`id` column is empty")
+			return nil, "", errors.Errorf("`id` column is empty")
 		}
 		planRows = append(planRows, idCol)
 		// iterate over runes. Runes are not always single byte.
@@ -47,7 +48,7 @@ func newPlanFromSQLResultRow(result [][3]string) (*Op, string, error) {
 			}
 		}
 		if indentLen%2 != 0 {
-			return nil, "", fmt.Errorf(
+			return nil, "", errors.Errorf(
 				"the indent is not expected, its length should be a multiple of 2: %s",
 				idCol,
 			)
@@ -55,7 +56,7 @@ func newPlanFromSQLResultRow(result [][3]string) (*Op, string, error) {
 
 		identLevel := indentLen / 2
 		if identLevel > len(stack) {
-			return nil, "", fmt.Errorf(
+			return nil, "", errors.Errorf(
 				"the indent level (%d) is larger than the stack size (%d): %s",
 				identLevel, len(stack), idCol,
 			)
@@ -115,7 +116,11 @@ func NewPlanFromStmtSummaryPlan(planStr string) (*Op, string, error) {
 		})
 	}
 
-	return newPlanFromSQLResultRow(result)
+	op, planStr, err := newPlanFromSQLResultRow(result)
+	if err != nil {
+		return nil, "", errors.Annotatef(err, "plan: %s", planStr)
+	}
+	return op, planStr, nil
 }
 
 func NewPlanFromQuery(
@@ -162,5 +167,11 @@ func NewPlanFromQuery(
 	for _, field := range fields {
 		result = append(result, [3]string{field[0], field[1], field[2]})
 	}
-	return newPlanFromSQLResultRow(result)
+	op, planStr, err := newPlanFromSQLResultRow(result)
+	if err != nil {
+		return nil, "", util.WrapUnretryableError(
+			errors.Annotatef(err, "failed to create plan for database: %s, query: %s", dbName, query),
+		)
+	}
+	return op, planStr, nil
 }

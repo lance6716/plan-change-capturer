@@ -34,7 +34,7 @@ func Run(ctx context.Context, cfg *Config) error {
 	}
 	defer util.Logger.Sync()
 
-	return run(ctx, cfg)
+	return errors.Trace(run(ctx, cfg))
 }
 
 // initLogger initializes the logger for the process. The default logger writes
@@ -209,7 +209,7 @@ func run(ctx context.Context, cfg *Config) error {
 		}
 	}
 
-	return report.Render(r, filepath.Join(cfg.WorkDir, "report.html"))
+	return errors.Trace(report.Render(r, filepath.Join(cfg.WorkDir, "report.html")))
 }
 
 // prepareDBConnections creates sql.DB to the old and new version databases. For
@@ -219,10 +219,7 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 	oldCfg := &cfg.OldVersion
 	oldDB, err := util.ConnectDB(oldCfg.Host, oldCfg.Port, oldCfg.User, oldCfg.Password)
 	if err != nil {
-		return nil, nil, errors.Annotatef(err,
-			"connect to old version DB at %s",
-			net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port)),
-		)
+		return nil, nil, err
 	}
 	oldDB.SetMaxOpenConns(oldCfg.MaxConn)
 
@@ -230,15 +227,12 @@ func prepareDBConnections(ctx context.Context, cfg *Config) (*sql.DB, *sql.DB, e
 	newDB, err := util.ConnectDB(newCfg.Host, newCfg.Port, newCfg.User, newCfg.Password)
 	if err != nil {
 		oldDB.Close()
-		return nil, nil, errors.Annotatef(err,
-			"connect to new version DB at %s",
-			net.JoinHostPort(newCfg.Host, strconv.Itoa(newCfg.Port)),
-		)
+		return nil, nil, err
 	}
 	// disable auto analyze for new version DB, to avoid stats change during the process
 	_, err = newDB.ExecContext(ctx, "SET @@global.tidb_enable_auto_analyze='OFF'")
 	if err != nil {
-		return nil, nil, errors.Annotate(err, "disable auto analyze for new version DB")
+		return nil, nil, errors.Annotate(err, "when disable auto analyze for new version DB")
 	}
 	newDB.SetMaxOpenConns(newCfg.MaxConn)
 
@@ -278,8 +272,8 @@ func cmpPlan(
 		err2 := syncForTable(ctx, oldDB, table, s.Schema, syncer, mgr, oldCfg)
 		if err2 != nil {
 			util.Logger.Error("sync table failed", zap.Error(err2))
-			if util.IsUnretryableError(err) {
-				ret.ErrMsg = err.Error()
+			if util.IsUnretryableError(err2) {
+				ret.ErrMsg = err2.Error()
 			}
 			return ret
 		}
@@ -287,6 +281,7 @@ func cmpPlan(
 
 	oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
 	if err2 != nil {
+		// this error is not related to network, so it must be non-retryable
 		ret.ErrMsg = err2.Error()
 		return ret
 	}
@@ -294,7 +289,9 @@ func cmpPlan(
 	newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
 	if err2 != nil {
 		util.Logger.Error("get new plan failed", zap.Error(err2))
-		// TODO(lance6716): check retryable
+		if util.IsUnretryableError(err2) {
+			ret.ErrMsg = err2.Error()
+		}
 		return ret
 	}
 	ret.NewDiffPlan = newPlanStr
@@ -305,6 +302,7 @@ func cmpPlan(
 	}
 	reason, err2 := compare.CmpPlan(sql, oldPlan, newPlan)
 	if err2 != nil {
+		// this error is not related to network, so it must be non-retryable
 		ret.ErrMsg = err2.Error()
 		return ret
 	}

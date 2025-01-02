@@ -34,7 +34,7 @@ const defaultWorkSubDir = "plan-change-capturer"
 
 func (c *Config) ensureDefaults() {
 	if c.TaskName == "" {
-		c.TaskName = time.Now().Format(time.RFC3339)
+		c.TaskName = "task-" + time.Now().Format(time.RFC3339)
 	}
 	if c.WorkDir == "" {
 		c.WorkDir = filepath.Join(os.TempDir(), defaultWorkSubDir)

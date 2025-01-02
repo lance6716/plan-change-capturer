@@ -2,7 +2,6 @@ package plan
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/pingcap/errors"
@@ -36,12 +35,12 @@ func NewOp(fullName, task, accessObjectKVStr string) (*Op, error) {
 	// FullName has the format of "{Type}_{ID}{Label}".
 	i := strings.IndexByte(fullName, '_')
 	if i == -1 {
-		return nil, fmt.Errorf("invalid plan opeartor: %s", fullName)
+		return nil, errors.Errorf("invalid plan opeartor: %s", fullName)
 	}
 	ret.Type = fullName[:i]
 	j := strings.LastIndexAny(fullName, "0123456789")
 	if j == -1 {
-		return nil, fmt.Errorf("invalid plan opeartor: %s", fullName)
+		return nil, errors.Errorf("invalid plan opeartor: %s", fullName)
 	}
 	ret.ID = fullName[i+1 : j+1]
 	ret.Label = fullName[j+1:]

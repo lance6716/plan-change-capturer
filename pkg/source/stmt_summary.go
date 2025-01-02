@@ -53,9 +53,8 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
 		WHERE EXEC_COUNT > 1 AND STMT_TYPE = 'Select'`
 	rows, err := db.QueryContext(ctx, query)
-	// TODO(lance6716): use errors.Annotate
 	if err != nil {
-		return nil, errors.Trace(err)
+		return nil, errors.Annotatef(err, "failed to execute query: %s", query)
 	}
 	defer rows.Close()
 
@@ -83,7 +82,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			&sumLatencyNanoSec,
 		)
 		if err != nil {
-			return nil, errors.Trace(err)
+			return nil, errors.Annotatef(err, "failed to scan row for query: %s", query)
 		}
 		if schema.Valid {
 			s.Schema = schema.String
@@ -104,7 +103,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			for _, table := range tables {
 				dbAndTable := strings.Split(table, ".")
 				if len(dbAndTable) != 2 {
-					return nil, errors.Errorf("invalid table name, expected 2 fields after split on `.` : %s", table)
+					return nil, errors.Errorf("invalid table name, expected 2 fields after split on `.` : %s", tableNames.String)
 				}
 				s.TableNamesNeedToSync = append(s.TableNamesNeedToSync, [2]string{dbAndTable[0], dbAndTable[1]})
 			}
@@ -118,7 +117,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 		}
 		ret = append(ret, &s)
 	}
-	return ret, errors.Trace(rows.Err())
+	return ret, errors.Annotatef(rows.Err(), "failed to get rows for query: %s", query)
 }
 
 // interpolateSQLMayHasBrackets processed the SQL returned by TiDB like `SELECT
@@ -159,18 +158,18 @@ func ReadTableStats(
 	url := fmt.Sprintf("http://%s/stats/dump/%v/%v", addr, schema, table)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("error when build HTTP request to URL (%s): %s", url, err)
+		return "", errors.Errorf("error when build HTTP request to URL (%s): %s", url, err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error when request URL (%s): %s", url, err)
+		return "", errors.Errorf("error when request URL (%s): %s", url, err)
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("error when request URL (%s): HTTP status not 200, got %d", url, resp.StatusCode)
+		return "", errors.Errorf("error when request URL (%s): HTTP status not 200, got %d", url, resp.StatusCode)
 	}
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("error when read response body from URL (%s): %s", url, err)
+		return "", errors.Errorf("error when read response body from URL (%s): %s", url, err)
 	}
 	return string(content), nil
 }

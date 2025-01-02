@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	schemaSubDir       = "schema"
-	schemaFilename     = "create.sql"
 	stmtSummaryDir     = "stmt-summary"
 	stmtSummaryExt     = ".json"
+	schemaSubDir       = "schema"
+	schemaFilename     = "create.sql"
 	tableStatsDir      = "table-stats"
 	tableStatsFilename = "table-stats.json"
 	resultSubDir       = "result"
@@ -25,7 +25,18 @@ const (
 
 // Manager owns a folder and organizes the files needed by the plan change capturer.
 //
-// TODO(lance6716): explain hierarchy
+// Currently, Manager organizes files into subfolders:
+//
+// - stmtSummaryDir: stores the statement summary records captured from
+// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY tables.
+//
+// - schemaSubDir: stores the statements to be restored. So the captured SQL can
+// run.
+//
+// - tableStatsDir: stores the table stats to be restored. So the captured SQL
+// can run and generate the same plan.
+//
+// - resultSubDir: stores the comparison results.
 type Manager struct {
 	workDir string
 }
@@ -45,9 +56,9 @@ func (m *Manager) WriteStmtSummary(s *source.StmtSummary) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return m.atomicWrite(filepath.Join(
+	return errors.Trace(m.atomicWrite(filepath.Join(
 		dir, s.SQLDigest+s.PlanDigest+stmtSummaryExt,
-	), content)
+	), content))
 }
 
 // WriteDatabaseStructure writes the CREATE DATABASE statement to the file.
@@ -57,7 +68,7 @@ func (m *Manager) WriteDatabaseStructure(db, createDatabase string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createDatabase))
+	return errors.Trace(m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createDatabase)))
 }
 
 // WriteTableStructure writes the CREATE TABLE / VIEW statement to the file.
@@ -66,7 +77,7 @@ func (m *Manager) WriteTableStructure(db, table, createTable string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createTable))
+	return errors.Trace(m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createTable)))
 }
 
 // WriteTableStats writes the table stats to the file.
@@ -75,7 +86,7 @@ func (m *Manager) WriteTableStats(db, table string, json string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return m.atomicWrite(filepath.Join(dir, tableStatsFilename), []byte(json))
+	return errors.Trace(m.atomicWrite(filepath.Join(dir, tableStatsFilename), []byte(json)))
 }
 
 // WriteResult writes the comparison result to the file.
@@ -88,10 +99,10 @@ func (m *Manager) WriteResult(r *compare.PlanCmpResult) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return m.atomicWrite(filepath.Join(dir,
+	return errors.Trace(m.atomicWrite(filepath.Join(dir,
 		r.OldVersionInfo.SQLDigest+r.OldVersionInfo.PlanDigest+resultExt),
 		content,
-	)
+	))
 }
 
 func (m *Manager) atomicWrite(path string, content []byte) error {
@@ -99,7 +110,7 @@ func (m *Manager) atomicWrite(path string, content []byte) error {
 	if err := os.WriteFile(tmpFile, content, 0666); err != nil {
 		return errors.Trace(err)
 	}
-	return os.Rename(tmpFile, path)
+	return errors.Trace(os.Rename(tmpFile, path))
 }
 
 // GetTableStatsPath returns the path of the table stats file.

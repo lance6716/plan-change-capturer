@@ -3,6 +3,7 @@ package compare
 import (
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
+	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser"
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
@@ -19,6 +20,9 @@ const (
 
 // CmpPlan compares two plan trees and returns the result. Please note that the
 // input will be modified in-place.
+//
+// If the caller has already failed to parse the SQL, it should pass an empty
+// string as the SQL argument.
 func CmpPlan(sql string, a, b *plan.Op) (Result, error) {
 	// projection will not affect the performance, so we remove it before comparing.
 	removeProj(a)
@@ -26,8 +30,7 @@ func CmpPlan(sql string, a, b *plan.Op) (Result, error) {
 	if sql != "" {
 		err := normalizeTableNameAlias(sql, a, b)
 		if err != nil {
-			// TODO(lance6716): we can ignore the error?
-			return Diff, err
+			return Diff, errors.Trace(err)
 		}
 	}
 	return cmpPlan(a, b), nil
@@ -85,7 +88,7 @@ func cmpAccessObject(a, b *plan.AccessObject) Result {
 }
 
 // removeProj removes the Projection operator from the plan tree in-place.
-// Currently we assume all types of projection are negligible to performance.
+// Currently, we assume all types of projection are negligible to performance.
 func removeProj(p *plan.Op) {
 	if p.Type == plancodec.TypeProj {
 		if len(p.Children) == 1 {
@@ -127,7 +130,7 @@ func normalizeTableNameAlias(sql string, a *plan.Op, b *plan.Op) error {
 	stmt, err := p.ParseOneStmt(sql, "", "")
 	util.ParserPool.Put(p)
 	if err != nil {
-		return err
+		return errors.Annotatef(err, "failed to parse SQL: %s", sql)
 	}
 	v := &aliasVisitor{alias: newUnionFind()}
 	stmt.Accept(v)
