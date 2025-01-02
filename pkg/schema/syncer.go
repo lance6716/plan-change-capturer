@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"sync"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
@@ -12,23 +13,23 @@ import (
 	"go.uber.org/zap"
 )
 
-// Syncer is used to sync the database / table structure and stats to the target
-// database.
-// TODO(lance6716): make it concurrent-safe.
+// Syncer is used to synchronize the database / table structure and stats to the
+// target database. It's concurrent safe and the same object will only be
+// synchronized once.
 type Syncer struct {
 	db *sql.DB
 
-	createdDatabase map[string]struct{}
-	createdTable    map[string]map[string]struct{}
-	createdStats    map[string]struct{}
+	databaseOnce sync.Map // dbName -> sync.Once
+	databaseErr  sync.Map // dbName -> execution error
+	tableOnce    sync.Map // {dbName}.{tableName} -> sync.Once
+	tableErr     sync.Map // {dbName}.{tableName} -> execution error
+	statsOnce    sync.Map // statsPath -> sync.Once
+	statsErr     sync.Map // statsPath -> execution error
 }
 
 func NewSyncer(db *sql.DB) *Syncer {
 	return &Syncer{
-		db:              db,
-		createdDatabase: make(map[string]struct{}),
-		createdTable:    make(map[string]map[string]struct{}),
-		createdStats:    make(map[string]struct{}),
+		db: db,
 	}
 }
 
@@ -37,14 +38,23 @@ func (s *Syncer) CreateDatabase(
 	dbName string,
 	sql string,
 ) (err error) {
-	if _, ok := s.createdDatabase[dbName]; ok {
+	o := new(sync.Once)
+	once, _ := s.databaseOnce.LoadOrStore(dbName, o)
+	once.(*sync.Once).Do(func() {
+		s.databaseErr.Store(dbName, s.createDatabase(ctx, dbName, sql))
+	})
+	errLoaded, _ := s.databaseErr.Load(dbName)
+	if errLoaded == nil {
 		return nil
 	}
-	defer func() {
-		if err == nil {
-			s.createdDatabase[dbName] = struct{}{}
-		}
-	}()
+	return errLoaded.(error)
+}
+
+func (s *Syncer) createDatabase(
+	ctx context.Context,
+	dbName string,
+	sql string,
+) (err error) {
 	_, err = s.db.ExecContext(ctx, sql)
 	if err == nil {
 		return nil
@@ -73,19 +83,24 @@ func (s *Syncer) CreateTable(
 	dbName, tableName string,
 	sql string,
 ) (err error) {
-	if _, ok := s.createdTable[dbName]; ok {
-		if _, ok2 := s.createdTable[dbName][tableName]; ok2 {
-			return nil
-		}
-	} else {
-		s.createdTable[dbName] = make(map[string]struct{})
+	dbDotTable := util.EscapeIdentifier(dbName) + "." + util.EscapeIdentifier(tableName)
+	o := new(sync.Once)
+	once, _ := s.tableOnce.LoadOrStore(dbDotTable, o)
+	once.(*sync.Once).Do(func() {
+		s.tableErr.Store(dbDotTable, s.createTable(ctx, dbName, tableName, sql))
+	})
+	errLoaded, _ := s.tableErr.Load(dbName)
+	if errLoaded == nil {
+		return nil
 	}
-	defer func() {
-		if err == nil {
-			s.createdTable[dbName][tableName] = struct{}{}
-		}
-	}()
+	return errLoaded.(error)
+}
 
+func (s *Syncer) createTable(
+	ctx context.Context,
+	dbName, tableName string,
+	sql string,
+) (err error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return errors.Annotatef(err, "create table for %s.%s", dbName, tableName)
@@ -126,14 +141,22 @@ func (s *Syncer) LoadStats(
 	ctx context.Context,
 	statsPath string,
 ) (err error) {
-	if _, ok := s.createdStats[statsPath]; ok {
+	o := new(sync.Once)
+	once, _ := s.statsOnce.LoadOrStore(statsPath, o)
+	once.(*sync.Once).Do(func() {
+		s.statsErr.Store(statsPath, s.loadStats(ctx, statsPath))
+	})
+	errLoaded, _ := s.statsErr.Load(statsPath)
+	if errLoaded == nil {
 		return nil
 	}
-	defer func() {
-		if err == nil {
-			s.createdStats[statsPath] = struct{}{}
-		}
-	}()
+	return errLoaded.(error)
+}
+
+func (s *Syncer) loadStats(
+	ctx context.Context,
+	statsPath string,
+) (err error) {
 	content, err := os.ReadFile(statsPath)
 	if err != nil {
 		return errors.Annotatef(err, "read stats file %s", statsPath)

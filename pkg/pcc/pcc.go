@@ -5,14 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/lance6716/plan-change-capturer/pkg/compare"
 	"github.com/lance6716/plan-change-capturer/pkg/filemgr"
 	"github.com/lance6716/plan-change-capturer/pkg/plan"
@@ -22,7 +20,6 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tidb/pkg/parser"
 	"go.uber.org/zap"
 )
 
@@ -88,127 +85,10 @@ func run(ctx context.Context, cfg *Config) error {
 		allResults = append(allResults, result)
 	}
 
-	waitRetry := make([]*compare.PlanCmpResult, 0, len(summaries))
-	waitRetryExecCount := 0
-	errResults := make([]*compare.PlanCmpResult, 0, len(summaries))
-	errResultsExecCount := 0
-	cmpSameResults := make([]*compare.PlanCmpResult, 0, len(summaries))
-	cmpSamerResultsExecCount := 0
-	cmpDiffResults := make([]*compare.PlanCmpResult, 0, len(summaries))
-	cmpDiffResultsExecCount := 0
-	for _, result := range allResults {
-		s := result.OldVersionInfo
-		switch result.Result {
-		case compare.Unknown:
-			if result.ErrMsg == "" {
-				// retryable error
-				waitRetry = append(waitRetry, result)
-				waitRetryExecCount += s.ExecCount
-				continue
-			}
-			errResults = append(errResults, result)
-			errResultsExecCount += s.ExecCount
-		case compare.Same:
-			cmpSameResults = append(cmpSameResults, result)
-			cmpSamerResultsExecCount += s.ExecCount
-		case compare.Diff:
-			cmpDiffResults = append(cmpDiffResults, result)
-			cmpDiffResultsExecCount += s.ExecCount
-		}
-
-		err = mgr.WriteResult(result)
-		if err != nil {
-			return errors.Trace(err)
-		}
-	}
-
-	host, err := os.Hostname()
+	r, err := processResults(allResults, cfg, mgr, start)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	lastUpdated := time.Now().Format(time.RFC3339)
-	r := &report.Report{
-		TaskInfoItems: [][2]string{
-			{"Task Name", cfg.TaskName},
-			{"Task Owner", os.Getenv("USER")},
-			{"Task Host", host},
-			{"Description", cfg.Description},
-		},
-		WorkloadInfoItems: [][2]string{
-			{"Old Version TiDB Address", net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port))},
-			{"Old Version TiDB User", oldCfg.User},
-			{"Capture Method", "Statement Summary"},
-			{"Total SQL Statement Count", strconv.Itoa(len(summaries))},
-		},
-		ExecutionInfoItems: [][2]string{
-			{"Started", start},
-			{"Last Updated", lastUpdated},
-			{"Global Time Limit", "UNLIMITED"},
-			{"Per-SQL Time Limit", "UNUSED"},
-			{"Status", "Completed"},
-			{"Number of Unsupported SQLs", "0"},
-			{"Number of Error", strconv.Itoa(len(errResults) + len(waitRetry))},
-			{"Number of Successful", strconv.Itoa(len(cmpSameResults) + len(cmpDiffResults))},
-		},
-		Summary: report.Summary{
-			Overall: report.ChangeCount{
-				SQL:  waitRetryExecCount + errResultsExecCount + cmpSamerResultsExecCount + cmpDiffResultsExecCount,
-				Plan: len(waitRetry) + len(errResults) + len(cmpSameResults) + len(cmpDiffResults),
-			},
-			Unchanged: report.ChangeCount{
-				SQL:  cmpSamerResultsExecCount,
-				Plan: len(cmpSameResults),
-			},
-			MayDegraded: report.ChangeCount{
-				SQL:  cmpDiffResultsExecCount,
-				Plan: len(cmpDiffResults),
-			},
-			Errors: report.ChangeCount{
-				SQL:  errResultsExecCount + waitRetryExecCount,
-				Plan: len(errResults) + len(waitRetry),
-			},
-		},
-	}
-	topSQLs := topNSumLatencyPlans(allResults, 500)
-	r.TopSQLs = report.Table{
-		Header: []string{"DIGEST", "DIGEST_TEXT", "Source AVG_LATENCY", "Source EXEC_COUNT", "Target AVG_LATENCY", "Target EXEC_COUNT", "Plan change"},
-		Data:   make([][]string, 0, len(topSQLs)),
-	}
-	for _, result := range topSQLs {
-		s := result.OldVersionInfo
-		r.TopSQLs.Data = append(r.TopSQLs.Data, []string{
-			s.SQLDigest,
-			s.SQL,
-			(s.SumLatency / time.Duration(s.ExecCount)).String(),
-			strconv.Itoa(s.ExecCount),
-			"",
-			"",
-			string(result.Result),
-		})
-	}
-	r.Details = make([]report.Details, len(allResults))
-	for i, result := range allResults {
-		r.Details[i] = report.Details{
-			Header: "SQL Digest: " + result.OldVersionInfo.SQLDigest + " Plan Digest: " + result.OldVersionInfo.PlanDigest,
-			Labels: [][2]string{
-				{"Schema Name", result.OldVersionInfo.Schema},
-				{"SQL Text", result.OldVersionInfo.SQL},
-				{"Source AVG_LATENCY", (result.OldVersionInfo.SumLatency / time.Duration(result.OldVersionInfo.ExecCount)).String()},
-				{"Source EXEC_COUNT", strconv.Itoa(result.OldVersionInfo.ExecCount)},
-				{"Plan Change", string(result.Result)},
-			},
-			Source: &report.Plan{
-				Text: result.OldPlan,
-			},
-		}
-
-		if result.NewDiffPlan != "" {
-			r.Details[i].Target = &report.Plan{
-				Text: result.NewDiffPlan,
-			}
-		}
-	}
-
 	return errors.Trace(report.Render(r, filepath.Join(cfg.WorkDir, "report.html")))
 }
 
@@ -319,118 +199,135 @@ func cmpPlan(
 	return ret
 }
 
-func syncForDB(
-	ctx context.Context,
-	oldDB *sql.DB,
-	dbName string,
-	syncer *schema.Syncer,
+func processResults(
+	allResults []*compare.PlanCmpResult,
+	cfg *Config,
 	mgr *filemgr.Manager,
-) error {
-	if dbName == "" {
-		return nil
-	}
-	if util.IsMemOrSysTable([2]string{dbName, ""}) {
-		return nil
-	}
-
-	// TODO(lance6716): skip read structure if we already have it?
-	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, dbName)
-	if err2 != nil {
-		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
-			err2 = util.WrapUnretryableError(err2)
+	startTimeStr string,
+) (*report.Report, error) {
+	waitRetry := make([]*compare.PlanCmpResult, 0, len(allResults))
+	waitRetryExecCount := 0
+	errResults := make([]*compare.PlanCmpResult, 0, len(allResults))
+	errResultsExecCount := 0
+	cmpSameResults := make([]*compare.PlanCmpResult, 0, len(allResults))
+	cmpSamerResultsExecCount := 0
+	cmpDiffResults := make([]*compare.PlanCmpResult, 0, len(allResults))
+	cmpDiffResultsExecCount := 0
+	for _, result := range allResults {
+		s := result.OldVersionInfo
+		switch result.Result {
+		case compare.Unknown:
+			if result.ErrMsg == "" {
+				// retryable error
+				waitRetry = append(waitRetry, result)
+				waitRetryExecCount += s.ExecCount
+				continue
+			}
+			errResults = append(errResults, result)
+			errResultsExecCount += s.ExecCount
+		case compare.Same:
+			cmpSameResults = append(cmpSameResults, result)
+			cmpSamerResultsExecCount += s.ExecCount
+		case compare.Diff:
+			cmpDiffResults = append(cmpDiffResults, result)
+			cmpDiffResultsExecCount += s.ExecCount
 		}
-		return errors.Trace(err2)
-	}
-	err2 = mgr.WriteDatabaseStructure(dbName, createDatabase)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
 
-	err2 = syncer.CreateDatabase(ctx, dbName, createDatabase)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-
-	return nil
-}
-
-// TODO(lance6716): test sync user memory table and sequence
-func syncForTable(
-	ctx context.Context,
-	oldDB *sql.DB,
-	table [2]string,
-	currDB string,
-	syncer *schema.Syncer,
-	mgr *filemgr.Manager,
-	oldCfg *TiDB,
-) error {
-	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, table[0])
-	if err2 != nil {
-		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
-			err2 = util.WrapUnretryableError(err2)
-		}
-		return errors.Trace(err2)
-	}
-	err2 = mgr.WriteDatabaseStructure(table[0], createDatabase)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-
-	createTable, err2 := util.ReadCreateTableOrView(ctx, oldDB, table[0], table[1])
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-	err2 = mgr.WriteTableStructure(table[0], table[1], createTable)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-
-	p := util.ParserPool.Get().(*parser.Parser)
-	stmt, err := p.ParseOneStmt(createTable, "", "")
-	util.ParserPool.Put(p)
-	if err != nil {
-		return errors.Annotatef(err, "parse create table statement for %s.%s", table[0], table[1])
-	}
-	tableNames := util.ExtractTableNames(stmt, table[0])
-	for _, t := range tableNames {
-		if t == table {
-			continue
-		}
-		err = syncForTable(ctx, oldDB, t, currDB, syncer, mgr, oldCfg)
+		err := mgr.WriteResult(result)
 		if err != nil {
-			return errors.Trace(err)
+			return nil, errors.Trace(err)
 		}
 	}
 
-	tableStats, err2 := source.ReadTableStats(
-		ctx,
-		http.DefaultClient,
-		net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.StatusPort)),
-		table[0],
-		table[1],
-	)
-	if err2 != nil {
-		return errors.Trace(err2)
+	host, err := os.Hostname()
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
-	err2 = mgr.WriteTableStats(table[0], table[1], tableStats)
-	if err2 != nil {
-		return errors.Trace(err2)
+	lastUpdated := time.Now().Format(time.RFC3339)
+	oldCfg := &cfg.OldVersion
+	r := &report.Report{
+		TaskInfoItems: [][2]string{
+			{"Task Name", cfg.TaskName},
+			{"Task Owner", os.Getenv("USER")},
+			{"Task Host", host},
+			{"Description", cfg.Description},
+		},
+		WorkloadInfoItems: [][2]string{
+			{"Old Version TiDB Address", net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port))},
+			{"Old Version TiDB User", oldCfg.User},
+			{"Capture Method", "Statement Summary"},
+			{"Total SQL Statement Count", strconv.Itoa(len(allResults))},
+		},
+		ExecutionInfoItems: [][2]string{
+			{"Started", startTimeStr},
+			{"Last Updated", lastUpdated},
+			{"Global Time Limit", "UNLIMITED"},
+			{"Per-SQL Time Limit", "UNUSED"},
+			{"Status", "Completed"},
+			{"Number of Unsupported SQLs", "0"},
+			{"Number of Error", strconv.Itoa(len(errResults) + len(waitRetry))},
+			{"Number of Successful", strconv.Itoa(len(cmpSameResults) + len(cmpDiffResults))},
+		},
+		Summary: report.Summary{
+			Overall: report.ChangeCount{
+				SQL:  waitRetryExecCount + errResultsExecCount + cmpSamerResultsExecCount + cmpDiffResultsExecCount,
+				Plan: len(waitRetry) + len(errResults) + len(cmpSameResults) + len(cmpDiffResults),
+			},
+			Unchanged: report.ChangeCount{
+				SQL:  cmpSamerResultsExecCount,
+				Plan: len(cmpSameResults),
+			},
+			MayDegraded: report.ChangeCount{
+				SQL:  cmpDiffResultsExecCount,
+				Plan: len(cmpDiffResults),
+			},
+			Errors: report.ChangeCount{
+				SQL:  errResultsExecCount + waitRetryExecCount,
+				Plan: len(errResults) + len(waitRetry),
+			},
+		},
+	}
+	topSQLs := topNSumLatencyPlans(allResults, 500)
+	r.TopSQLs = report.Table{
+		Header: []string{"DIGEST", "DIGEST_TEXT", "Source AVG_LATENCY", "Source EXEC_COUNT", "Target AVG_LATENCY", "Target EXEC_COUNT", "Plan change"},
+		Data:   make([][]string, 0, len(topSQLs)),
+	}
+	for _, result := range topSQLs {
+		s := result.OldVersionInfo
+		r.TopSQLs.Data = append(r.TopSQLs.Data, []string{
+			s.SQLDigest,
+			s.SQL,
+			(s.SumLatency / time.Duration(s.ExecCount)).String(),
+			strconv.Itoa(s.ExecCount),
+			"",
+			"",
+			string(result.Result),
+		})
+	}
+	r.Details = make([]report.Details, len(allResults))
+	for i, result := range allResults {
+		r.Details[i] = report.Details{
+			Header: "SQL Digest: " + result.OldVersionInfo.SQLDigest + " Plan Digest: " + result.OldVersionInfo.PlanDigest,
+			Labels: [][2]string{
+				{"Schema Name", result.OldVersionInfo.Schema},
+				{"SQL Text", result.OldVersionInfo.SQL},
+				{"Source AVG_LATENCY", (result.OldVersionInfo.SumLatency / time.Duration(result.OldVersionInfo.ExecCount)).String()},
+				{"Source EXEC_COUNT", strconv.Itoa(result.OldVersionInfo.ExecCount)},
+				{"Plan Change", string(result.Result)},
+			},
+			Source: &report.Plan{
+				Text: result.OldPlan,
+			},
+		}
+
+		if result.NewDiffPlan != "" {
+			r.Details[i].Target = &report.Plan{
+				Text: result.NewDiffPlan,
+			}
+		}
 	}
 
-	err2 = syncer.CreateDatabase(ctx, table[0], createDatabase)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-	err2 = syncer.CreateTable(ctx, table[0], table[1], createTable)
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-	err2 = syncer.LoadStats(ctx, mgr.GetTableStatsPath(table[0], table[1]))
-	if err2 != nil {
-		return errors.Trace(err2)
-	}
-
-	return nil
+	return r, nil
 }
 
 type ResultHeap []*compare.PlanCmpResult

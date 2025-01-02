@@ -23,7 +23,8 @@ const (
 	resultExt          = ".json"
 )
 
-// Manager owns a folder and organizes the files needed by the plan change capturer.
+// Manager owns a folder and organizes the files needed by the plan change
+// capturer. TODO(lance6716): skip write file if we have already written.
 //
 // Currently, Manager organizes files into subfolders:
 //
@@ -63,7 +64,6 @@ func (m *Manager) WriteStmtSummary(s *source.StmtSummary) error {
 
 // WriteDatabaseStructure writes the CREATE DATABASE statement to the file.
 func (m *Manager) WriteDatabaseStructure(db, createDatabase string) error {
-	// TODO(lance6716): skip write file if we have already written.
 	dir := filepath.Join(m.workDir, schemaSubDir, db)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)

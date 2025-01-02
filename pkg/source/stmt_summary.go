@@ -17,7 +17,8 @@ import (
 )
 
 // StmtSummary represents one record in
-// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY.
+// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY. The SQLDigest +
+// PlanDigest fields are used as the ID of the StmtSummary.
 type StmtSummary struct {
 	// fields from the table
 	Schema               string
