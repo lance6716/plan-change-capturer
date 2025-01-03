@@ -101,6 +101,9 @@ func run(ctx context.Context, cfg *Config) error {
 		}
 	})
 
+	// TODO(lance6716): aggregate the summaries with the same digest but different
+	// instance or capture window
+
 	// TODO(lance6716): consumer should be fast enough to avoid blocking the
 	// connection and causes connection timeout
 	resultCh := make(chan *compare.PlanCmpResult, maxConn)

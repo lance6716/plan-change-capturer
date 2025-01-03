@@ -73,7 +73,7 @@ func syncForTable(
 		return errors.Trace(err2)
 	}
 
-	createTable, err2 := util.ReadCreateTableOrView(ctx, oldDB, table[0], table[1])
+	createTable, err2 := util.ReadCreateTableViewSeq(ctx, oldDB, table[0], table[1])
 	if err2 != nil {
 		return errors.Trace(err2)
 	}

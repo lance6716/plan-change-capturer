@@ -133,14 +133,14 @@ func ReadCreateDatabase(
 	return "", errors.Errorf("failed to find create database statement for %s", escapedDBName)
 }
 
-// ReadCreateTableOrView reads the CREATE TABLE / VIEW statement from the database.
-func ReadCreateTableOrView(
+// ReadCreateTableViewSeq reads the CREATE TABLE / VIEW / SEQUENCE statement from the database.
+func ReadCreateTableViewSeq(
 	ctx context.Context,
 	db *sql.DB,
-	dbName, tableOrViewName string,
+	dbName, tableViewSeqName string,
 ) (string, error) {
 	escapedDBName := EscapeIdentifier(dbName)
-	escapedTable := EscapeIdentifier(tableOrViewName)
+	escapedTable := EscapeIdentifier(tableViewSeqName)
 	query := "SHOW CREATE TABLE " + escapedDBName + "." + escapedTable
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
@@ -163,6 +163,14 @@ func ReadCreateTableOrView(
 	if allFound {
 		return create[0][0], nil
 	}
+	create, allFound, err = ReadStrRowsByColumnName(rows, []string{"Create Sequence"})
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	if allFound {
+		return create[0][0], nil
+	}
+
 	columnNames, err := rows.Columns()
 	if err != nil {
 		return "", errors.Annotatef(err, "failed to get columns for query: %s", query)

@@ -124,7 +124,7 @@ func (s *Syncer) createTable(
 		zap.String("table", tableName),
 		zap.String("sql", sql),
 		zap.Error(err))
-	sql2, err2 := util.ReadCreateTableOrView(ctx, s.db, dbName, tableName)
+	sql2, err2 := util.ReadCreateTableViewSeq(ctx, s.db, dbName, tableName)
 	if err2 != nil {
 		return errors.Trace(err2)
 	}
