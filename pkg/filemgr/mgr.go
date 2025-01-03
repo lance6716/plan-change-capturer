@@ -2,13 +2,13 @@ package filemgr
 
 import (
 	"encoding/json"
-	"math/rand"
 	"os"
 	"path/filepath"
-	"strconv"
+	"time"
 
 	"github.com/lance6716/plan-change-capturer/pkg/compare"
 	"github.com/lance6716/plan-change-capturer/pkg/source"
+	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 )
 
@@ -49,7 +49,13 @@ func NewManager(workDir string) *Manager {
 
 // WriteStmtSummary writes the statement summary to the file.
 func (m *Manager) WriteStmtSummary(s *source.StmtSummary) error {
-	dir := filepath.Join(m.workDir, stmtSummaryDir)
+	dir := filepath.Join(
+		m.workDir,
+		stmtSummaryDir,
+		s.SQLDigest,
+		s.PlanDigest,
+		util.EscapePath(s.Instance),
+	)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
@@ -57,8 +63,8 @@ func (m *Manager) WriteStmtSummary(s *source.StmtSummary) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return errors.Trace(m.atomicWrite(filepath.Join(
-		dir, s.SQLDigest+s.PlanDigest+stmtSummaryExt,
+	return errors.Trace(util.AtomicWrite(filepath.Join(
+		dir, s.SummaryBeginTime.Format(time.RFC3339)+stmtSummaryExt,
 	), content))
 }
 
@@ -68,7 +74,7 @@ func (m *Manager) WriteDatabaseStructure(db, createDatabase string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return errors.Trace(m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createDatabase)))
+	return errors.Trace(util.AtomicWrite(filepath.Join(dir, schemaFilename), []byte(createDatabase)))
 }
 
 // WriteTableStructure writes the CREATE TABLE / VIEW statement to the file.
@@ -77,7 +83,7 @@ func (m *Manager) WriteTableStructure(db, table, createTable string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return errors.Trace(m.atomicWrite(filepath.Join(dir, schemaFilename), []byte(createTable)))
+	return errors.Trace(util.AtomicWrite(filepath.Join(dir, schemaFilename), []byte(createTable)))
 }
 
 // WriteTableStats writes the table stats to the file.
@@ -86,12 +92,19 @@ func (m *Manager) WriteTableStats(db, table string, json string) error {
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
-	return errors.Trace(m.atomicWrite(filepath.Join(dir, tableStatsFilename), []byte(json)))
+	return errors.Trace(util.AtomicWrite(filepath.Join(dir, tableStatsFilename), []byte(json)))
 }
 
 // WriteResult writes the comparison result to the file.
 func (m *Manager) WriteResult(r *compare.PlanCmpResult) error {
-	dir := filepath.Join(m.workDir, resultSubDir)
+	s := r.OldVersionInfo
+	dir := filepath.Join(
+		m.workDir,
+		resultSubDir,
+		s.SQLDigest,
+		s.PlanDigest,
+		util.EscapePath(s.Instance),
+	)
 	if err := os.MkdirAll(dir, 0776); err != nil {
 		return errors.Trace(err)
 	}
@@ -99,18 +112,11 @@ func (m *Manager) WriteResult(r *compare.PlanCmpResult) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	return errors.Trace(m.atomicWrite(filepath.Join(dir,
-		r.OldVersionInfo.SQLDigest+r.OldVersionInfo.PlanDigest+resultExt),
+	return errors.Trace(util.AtomicWrite(filepath.Join(
+		dir,
+		s.SummaryBeginTime.Format(time.RFC3339)+resultExt),
 		content,
 	))
-}
-
-func (m *Manager) atomicWrite(path string, content []byte) error {
-	tmpFile := path + ".tmp" + strconv.Itoa(rand.Int())
-	if err := os.WriteFile(tmpFile, content, 0666); err != nil {
-		return errors.Trace(err)
-	}
-	return errors.Trace(os.Rename(tmpFile, path))
 }
 
 // GetTableStatsPath returns the path of the table stats file.

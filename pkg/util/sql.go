@@ -29,17 +29,19 @@ func ConnectDB(
 ) (*sql.DB, error) {
 	// TODO(lance6716): TLS and pool idle connections
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	c, err := mysql.NewConnector(&mysql.Config{
-		User:                 user,
-		Passwd:               password,
-		Addr:                 addr,
-		AllowNativePasswords: true,
-		Collation:            "utf8mb4_general_ci",
-		Params: map[string]string{
-			// relax SQL mode
-			"sql_mode": "'IGNORE_SPACE,NO_AUTO_VALUE_ON_ZERO,ALLOW_INVALID_DATES,NO_ENGINE_SUBSTITUTION'",
-		},
-	})
+	cfg := mysql.NewConfig()
+	cfg.User = user
+	cfg.Passwd = password
+	cfg.Addr = addr
+	cfg.AllowNativePasswords = true
+	cfg.ParseTime = true
+	cfg.MaxAllowedPacket = -1
+	cfg.Params = map[string]string{
+		// relax SQL mode
+		"sql_mode": "'IGNORE_SPACE,NO_AUTO_VALUE_ON_ZERO,ALLOW_INVALID_DATES,NO_ENGINE_SUBSTITUTION'",
+	}
+
+	c, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return nil, errors.Annotatef(err, "connect to %s as %s", addr, user)
 	}

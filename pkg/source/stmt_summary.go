@@ -17,8 +17,9 @@ import (
 )
 
 // StmtSummary represents one record in
-// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY. The SQLDigest +
-// PlanDigest fields are used as the ID of the StmtSummary.
+// INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY. The Instance +
+// SummaryBeginTime + SQLDigest + PlanDigest fields are used as the ID of the
+// StmtSummary.
 type StmtSummary struct {
 	// fields from the table
 	Schema               string
@@ -29,14 +30,14 @@ type StmtSummary struct {
 	PlanDigest           string
 	ExecCount            int
 	SumLatency           time.Duration
-
+	Instance             string
+	SummaryBeginTime     time.Time
 	// computed fields
 	HasParseError bool
 }
 
 // TODO(lance6716): can use statements_summary_evicted to calculate confidence
 // TODO(lance6716): query CLUSTER_STATEMENTS_SUMMARY to get real time data
-
 func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
 	// TODO(lance6716): pagination
@@ -50,7 +51,9 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
     		DIGEST, 
     		PLAN_DIGEST,
     		EXEC_COUNT,
-    		SUM_LATENCY
+    		SUM_LATENCY,
+    		INSTANCE,
+    		SUMMARY_BEGIN_TIME
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
 		WHERE EXEC_COUNT > 1 AND STMT_TYPE = 'Select'`
 	rows, err := db.QueryContext(ctx, query)
@@ -81,6 +84,8 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			&s.PlanDigest,
 			&s.ExecCount,
 			&sumLatencyNanoSec,
+			&s.Instance,
+			&s.SummaryBeginTime,
 		)
 		if err != nil {
 			return nil, errors.Annotatef(err, "failed to scan row for query: %s", query)
