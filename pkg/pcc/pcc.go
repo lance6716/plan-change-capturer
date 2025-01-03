@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"time"
@@ -20,7 +21,9 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 // Run is the main entry function of the pcc logic.
@@ -66,23 +69,78 @@ func run(ctx context.Context, cfg *Config) error {
 	syncer := schema.NewSyncer(newDB)
 
 	oldCfg := &cfg.OldVersion
-
-	summaries, err := source.ReadStmtSummary(ctx, oldDB)
-	if err != nil {
-		return errors.Trace(err)
-	}
-
-	for _, s := range summaries {
-		err = mgr.WriteStmtSummary(s)
-		if err != nil {
-			return errors.Trace(err)
+	maxConn := max(cfg.OldVersion.MaxConn, cfg.NewVersion.MaxConn)
+	eg, egCtx := errgroup.WithContext(ctx)
+	summFromSourceCh := make(chan *source.StmtSummary, maxConn)
+	eg.Go(func() error {
+		err2 := source.ReadStmtSummary(egCtx, oldDB, summFromSourceCh)
+		if err2 != nil {
+			return errors.Trace(err2)
 		}
+		close(summFromSourceCh)
+		return nil
+	})
+
+	summAfterPersistCh := make(chan *source.StmtSummary, maxConn)
+	eg.Go(func() error {
+		for {
+			select {
+			case s, ok := <-summFromSourceCh:
+				if !ok {
+					close(summAfterPersistCh)
+					return nil
+				}
+				err2 := mgr.WriteStmtSummary(s)
+				if err2 != nil {
+					return errors.Trace(err2)
+				}
+				summAfterPersistCh <- s
+			case <-egCtx.Done():
+				return nil
+			}
+		}
+	})
+
+	// TODO(lance6716): consumer should be fast enough to avoid blocking the
+	// connection and causes connection timeout
+	resultCh := make(chan *compare.PlanCmpResult, maxConn)
+	cmpWorkerConn := max(maxConn, runtime.NumCPU())
+	cmpWorkerCnt := atomic.NewInt64(int64(cmpWorkerConn))
+	for range cmpWorkerConn {
+		eg.Go(func() error {
+			for {
+				select {
+				case s, ok := <-summAfterPersistCh:
+					if !ok {
+						if cmpWorkerCnt.Dec() == 0 {
+							close(resultCh)
+						}
+						return nil
+					}
+					resultCh <- cmpPlan(ctx, s, oldDB, newDB, syncer, mgr, oldCfg)
+				case <-egCtx.Done():
+					return nil
+				}
+			}
+		})
 	}
 
-	allResults := make([]*compare.PlanCmpResult, 0, len(summaries))
-	for _, s := range summaries {
-		result := cmpPlan(ctx, s, oldDB, newDB, syncer, mgr, oldCfg)
-		allResults = append(allResults, result)
+	allResults := make([]*compare.PlanCmpResult, 0, 128)
+	eg.Go(func() error {
+		for {
+			select {
+			case result, ok := <-resultCh:
+				if !ok {
+					return nil
+				}
+				allResults = append(allResults, result)
+			case <-egCtx.Done():
+				return nil
+			}
+		}
+	})
+	if err = eg.Wait(); err != nil {
+		return errors.Trace(err)
 	}
 
 	r, err := processResults(allResults, cfg, mgr, start)

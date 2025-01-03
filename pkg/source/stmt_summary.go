@@ -14,6 +14,7 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser"
+	"go.uber.org/zap"
 )
 
 // StmtSummary represents one record in
@@ -36,9 +37,17 @@ type StmtSummary struct {
 	HasParseError bool
 }
 
+// ReadStmtSummary reads the statement summary from the TiDB cluster. It emits
+// the StmtSummary one by one into `outCh`, or return error. When work is
+// completed, it will return nil. In any cases it will not close the channel.
+//
 // TODO(lance6716): can use statements_summary_evicted to calculate confidence
 // TODO(lance6716): query CLUSTER_STATEMENTS_SUMMARY to get real time data
-func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
+func ReadStmtSummary(
+	ctx context.Context,
+	db *sql.DB,
+	outCh chan<- *StmtSummary,
+) error {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
 	// TODO(lance6716): pagination
 	// rely on the ast.GetStmtLabel function to filter out non-select statements
@@ -58,14 +67,13 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 		WHERE EXEC_COUNT > 1 AND STMT_TYPE = 'Select'`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, errors.Annotatef(err, "failed to execute query: %s", query)
+		return errors.Annotatef(err, "failed to execute query: %s", query)
 	}
 	defer rows.Close()
 
 	p := util.ParserPool.Get().(*parser.Parser)
 	defer util.ParserPool.Put(p)
 
-	var ret []*StmtSummary
 	for rows.Next() {
 		var (
 			s                 StmtSummary
@@ -88,7 +96,7 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			&s.SummaryBeginTime,
 		)
 		if err != nil {
-			return nil, errors.Annotatef(err, "failed to scan row for query: %s", query)
+			return errors.Annotatef(err, "failed to scan row for query: %s", query)
 		}
 		if schema.Valid {
 			s.Schema = schema.String
@@ -103,13 +111,21 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 			s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
 		}
 
+		failedToSplitDBTable := false
 		if s.HasParseError && len(tableNames.String) > 0 {
 			tables := strings.Split(tableNames.String, ",")
 			s.TableNamesNeedToSync = make([][2]string, 0, len(tables))
 			for _, table := range tables {
 				dbAndTable := strings.Split(table, ".")
 				if len(dbAndTable) != 2 {
-					return nil, errors.Errorf("invalid table name, expected 2 fields after split on `.` : %s", tableNames.String)
+					failedToSplitDBTable = true
+					util.Logger.Error(
+						"failed to split db and table, error may happen subsequently",
+						zap.String("dbAndTable", table),
+						zap.String("allTables", tableNames.String),
+						zap.String("sqlDigest", s.SQLDigest),
+						zap.String("planDigest", s.PlanDigest))
+					continue
 				}
 				s.TableNamesNeedToSync = append(s.TableNamesNeedToSync, [2]string{dbAndTable[0], dbAndTable[1]})
 			}
@@ -118,12 +134,12 @@ func ReadStmtSummary(ctx context.Context, db *sql.DB) ([]*StmtSummary, error) {
 		// filter synchronize system tables
 		s.TableNamesNeedToSync = slices.DeleteFunc(s.TableNamesNeedToSync, util.IsMemOrSysTable)
 		// skip simple SELECT without accessing any user table
-		if len(s.TableNamesNeedToSync) == 0 {
+		if len(s.TableNamesNeedToSync) == 0 && !failedToSplitDBTable {
 			continue
 		}
-		ret = append(ret, &s)
+		outCh <- &s
 	}
-	return ret, errors.Annotatef(rows.Err(), "failed to get rows for query: %s", query)
+	return errors.Annotatef(rows.Err(), "failed to get rows for query: %s", query)
 }
 
 // interpolateSQLMayHasBrackets processed the SQL returned by TiDB like `SELECT
