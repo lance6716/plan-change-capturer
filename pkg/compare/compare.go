@@ -126,7 +126,6 @@ func (vis *aliasVisitor) Leave(n ast.Node) (ast.Node, bool) {
 
 func normalizeTableNameAlias(sql string, a *plan.Op, b *plan.Op) error {
 	p := util.ParserPool.Get().(*parser.Parser)
-	// TODO(lance6716): check the result is fetched in default charset and collation
 	stmt, err := p.ParseOneStmt(sql, "", "")
 	util.ParserPool.Put(p)
 	if err != nil {

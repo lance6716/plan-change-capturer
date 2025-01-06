@@ -12,6 +12,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser"
+	tidb "github.com/pingcap/tidb/pkg/parser/mysql"
 )
 
 // EscapeIdentifier escapes an MySQL identifier.
@@ -27,7 +28,7 @@ func ConnectDB(
 	user string,
 	password string,
 ) (*sql.DB, error) {
-	// TODO(lance6716): TLS and pool idle connections
+	// TODO(lance6716): TLS
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	cfg := mysql.NewConfig()
 	cfg.User = user
@@ -36,6 +37,7 @@ func ConnectDB(
 	cfg.AllowNativePasswords = true
 	cfg.ParseTime = true
 	cfg.MaxAllowedPacket = -1
+	cfg.Collation = tidb.DefaultCollationName
 	cfg.Params = map[string]string{
 		// relax SQL mode
 		"sql_mode": "'IGNORE_SPACE,NO_AUTO_VALUE_ON_ZERO,ALLOW_INVALID_DATES,NO_ENGINE_SUBSTITUTION'",
@@ -155,12 +157,19 @@ func ReadCreateTableViewSeq(
 	if allFound {
 		return create[0][0], nil
 	}
-	// TODO(lance6716): remove DEFINER?
 	create, allFound, err = ReadStrRowsByColumnName(rows, []string{"Create View"})
 	if err != nil {
 		return "", errors.Trace(err)
 	}
 	if allFound {
+		createSQL := create[0][0]
+		// remove privilege information
+		// CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `tv` (`a+1`) AS SELECT `a`+1 AS `a+1` FROM `test`.`t`
+		// --> CREATE VIEW `tv` (`a+1`) AS SELECT `a`+1 AS `a+1` FROM `test`.`t`
+		viewIdx := strings.Index(createSQL, " VIEW ")
+		if viewIdx != -1 {
+			createSQL = "CREATE" + createSQL[viewIdx:]
+		}
 		return create[0][0], nil
 	}
 	create, allFound, err = ReadStrRowsByColumnName(rows, []string{"Create Sequence"})

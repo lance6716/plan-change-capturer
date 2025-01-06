@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser"
+	"github.com/pingcap/tidb/pkg/parser/ast"
 	"go.uber.org/zap"
 )
 
@@ -49,8 +51,9 @@ func ReadStmtSummary(
 	outCh chan<- *StmtSummary,
 ) error {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
-	// TODO(lance6716): pagination
+	// TODO(lance6716): pagination on time range
 	// rely on the ast.GetStmtLabel function to filter out non-select statements
+	// TODO(lance6716): for plan_in_binding, need to get the sync binding first because binding may not take effect
 	query := `
 		SELECT 
     		SCHEMA_NAME, 
@@ -64,7 +67,7 @@ func ReadStmtSummary(
     		INSTANCE,
     		SUMMARY_BEGIN_TIME
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
-		WHERE EXEC_COUNT > 1 AND STMT_TYPE = 'Select'`
+		WHERE EXEC_COUNT > 1 AND STMT_TYPE IN ('Select', 'Insert', 'Replace', 'Update', 'Delete')`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return errors.Annotatef(err, "failed to execute query: %s", query)
@@ -79,13 +82,13 @@ func ReadStmtSummary(
 			s                 StmtSummary
 			tableNames        sql.NullString
 			schema            sql.NullString
-			sqlMayHasBrackets string
+			sqlRecorded       string
 			sumLatencyNanoSec int64
 		)
 
 		err = rows.Scan(
 			&schema,
-			&sqlMayHasBrackets,
+			&sqlRecorded,
 			&tableNames,
 			&s.PlanStr,
 			&s.SQLDigest,
@@ -98,18 +101,16 @@ func ReadStmtSummary(
 		if err != nil {
 			return errors.Annotatef(err, "failed to scan row for query: %s", query)
 		}
+
 		if schema.Valid {
 			s.Schema = schema.String
 		}
-		s.SQL = interpolateSQLMayHasBrackets(sqlMayHasBrackets, p)
-		s.SumLatency = time.Duration(sumLatencyNanoSec)
-
-		stmt, err2 := p.ParseOneStmt(s.SQL, "", "")
-		if err2 != nil {
-			s.HasParseError = true
-		} else {
-			s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
+		skip := fillFromSQLRecorded(sqlRecorded, &s, p)
+		if skip {
+			continue
 		}
+
+		s.SumLatency = time.Duration(sumLatencyNanoSec)
 
 		failedToSplitDBTable := false
 		if s.HasParseError && len(tableNames.String) > 0 {
@@ -131,7 +132,7 @@ func ReadStmtSummary(
 			}
 		}
 
-		// filter synchronize system tables
+		// don't synchronize system tables
 		s.TableNamesNeedToSync = slices.DeleteFunc(s.TableNamesNeedToSync, util.IsMemOrSysTable)
 		// skip simple SELECT without accessing any user table
 		if len(s.TableNamesNeedToSync) == 0 && !failedToSplitDBTable {
@@ -140,6 +141,60 @@ func ReadStmtSummary(
 		outCh <- &s
 	}
 	return errors.Annotatef(rows.Err(), "failed to get rows for query: %s", query)
+}
+
+var dmlRE = regexp.MustCompile(`(?i)^\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b`)
+
+// fillFromSQLRecorded fills the StmtSummary fields with the SQL recorded in the
+// table. This function requires below fields should be set
+//
+// - StmtSummary.Schema
+//
+// # This function will fill below fields
+//
+// - StmtSummary.SQL
+// - StmtSummary.TableNamesNeedToSync
+// - StmtSummary.HasParseError
+func fillFromSQLRecorded(sqlRecorded string, s *StmtSummary, p *parser.Parser) (skip bool) {
+	if strings.Contains(sqlRecorded, "(len:") {
+		util.Logger.Warn("skip SQL because it's already truncated",
+			zap.String("sql", sqlRecorded))
+		return true
+	}
+
+	s.SQL = interpolateSQLMayHasBrackets(sqlRecorded, p)
+	stmt, err2 := p.ParseOneStmt(s.SQL, "", "")
+	if err2 != nil {
+		// try to reduce noise for DML STMT_TYPE
+		if dmlRE.MatchString(s.SQL) {
+			return true
+		}
+		s.HasParseError = true
+		return false
+	}
+
+	switch v := stmt.(type) {
+	case *ast.InsertStmt:
+		if v.Select == nil {
+			return true
+		}
+		tables := util.ExtractTableNames(v.Select, s.Schema)
+		if len(tables) == 0 {
+			return true
+		}
+	case *ast.UpdateStmt:
+		if v.Where == nil {
+			return true
+		}
+	case *ast.DeleteStmt:
+		if v.Where == nil {
+			return true
+		}
+	}
+
+	s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
+
+	return false
 }
 
 // interpolateSQLMayHasBrackets processed the SQL returned by TiDB like `SELECT

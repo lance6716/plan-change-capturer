@@ -51,7 +51,8 @@ func syncForDB(
 	return nil
 }
 
-// TODO(lance6716): test sync user memory table and sequence
+// TODO(lance6716): test sync user TEMPORARY, CACHE (plan will be different if
+// not ALTER CACHE) table
 func syncForTable(
 	ctx context.Context,
 	oldDB *sql.DB,

@@ -23,7 +23,7 @@ func (v *visitor) Leave(in ast.Node) (out ast.Node, ok bool) {
 }
 
 // ExtractTableNames extracts all table names from a statement node.
-func ExtractTableNames(s ast.StmtNode, currDB string) [][2]string {
+func ExtractTableNames(s ast.Node, currDB string) [][2]string {
 	v := &visitor{currDB: currDB}
 	s.Accept(v)
 	return v.tableNames

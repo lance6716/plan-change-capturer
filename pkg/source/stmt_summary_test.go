@@ -46,10 +46,11 @@ func TestReadStmtSummary(t *testing.T) {
 	mustExec(t, conn, "SELECT a FROM test_read_stmt_summary WHERE b = 1 AND c = 1")
 	mustExec(t, conn, "SELECT a FROM test_read_stmt_summary WHERE b = 2 AND c = 2")
 
-	summaries, err := ReadStmtSummary(ctx, db)
+	outCh := make(chan *StmtSummary, 16)
+	err = ReadStmtSummary(ctx, db, outCh)
 	require.NoError(t, err)
 	// at least we have executed above two queries which has same pattern
-	require.Greater(t, len(summaries), 0)
+	require.Greater(t, len(outCh), 0)
 }
 
 func TestInterpolateSQLMayHasBrackets(t *testing.T) {
@@ -78,5 +79,34 @@ func TestInterpolateSQLMayHasBrackets(t *testing.T) {
 	p := parser.New()
 	for _, c := range cases {
 		require.Equal(t, c.expected, interpolateSQLMayHasBrackets(c.sql, p))
+	}
+}
+
+func TestFillFromSQLRecorded(t *testing.T) {
+	p := parser.New()
+	shouldSkipCases := []string{
+		"aaaaa(len:20)",
+		"INSERT INTO test.t VALUES (1, 1, 1), (2, 2, 2)",
+		"UPDATE test.t SET a = 1",
+		"DELETE FROM test.t",
+		"INSERT INTO test.t (ts) SELECT NOW()",
+		"insert into `small` ( `create_date` , `desc` ) values ( ... )",
+	}
+
+	for _, c := range shouldSkipCases {
+		s := &StmtSummary{}
+		require.True(t, fillFromSQLRecorded(c, s, p))
+	}
+
+	shouldNotSkipCases := []string{
+		"SELECT * FROM t WHERE a = 1",
+		"INSERT INTO test.t SELECT * FROM t",
+		"UPDATE t SET a = 1 WHERE b = 1",
+		"DELETE FROM t WHERE b = 1",
+	}
+
+	for _, c := range shouldNotSkipCases {
+		s := &StmtSummary{}
+		require.False(t, fillFromSQLRecorded(c, s, p))
 	}
 }
