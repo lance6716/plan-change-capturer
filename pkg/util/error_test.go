@@ -39,39 +39,39 @@ func TestCheckOldDBSQLErrorUnretryable(t *testing.T) {
 
 	_, err = db.Exec("qweqwe dsasdasd")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("DROP DATABASE IF EXISTS unit_test")
 	require.NoError(t, err)
 
 	_, err = db.Exec("USE unit_test")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("SHOW CREATE DATABASE unit_test")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("CREATE TABLE unit_test.t (a int)")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("CREATE DATABASE unit_test")
 	require.NoError(t, err)
 
 	_, err = db.Exec("CREATE TABLE unit_test.t LIKE unit_test.t2")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("CREATE VIEW unit_test.v FROM SELECT * FROM unit_test.t")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("SHOW CREATE TABLE unit_test.t")
 	require.Error(t, err)
-	require.True(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.True(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 
 	_, err = db.Exec("DROP DATABASE mysql")
 	require.Error(t, err)
-	require.False(t, CheckOldDBSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
+	require.False(t, IsSQLErrorUnretryable(err.(*mysql.MySQLError)), "err: %v", err)
 }

@@ -82,7 +82,7 @@ func TestInterpolateSQLMayHasBrackets(t *testing.T) {
 	}
 }
 
-func TestFillFromSQLRecorded(t *testing.T) {
+func TestFillFromSQLRecordedSkip(t *testing.T) {
 	p := parser.New()
 	shouldSkipCases := []string{
 		"aaaaa(len:20)",
@@ -109,4 +109,21 @@ func TestFillFromSQLRecorded(t *testing.T) {
 		s := &StmtSummary{}
 		require.False(t, fillFromSQLRecorded(c, s, p))
 	}
+}
+
+func TestBindingDigest(t *testing.T) {
+	p := parser.New()
+	s := &StmtSummary{
+		Schema:        "test",
+		PlanInBinding: true,
+	}
+	require.False(t, fillFromSQLRecorded("select * from t1", s, p))
+	expected := "4ea0618129ffc6a7effbc0eff4bbcb41a7f5d4c53a6fa0b2e9be81c7010915b0"
+	require.Equal(t, expected, s.BindingDigest)
+
+	require.False(t, fillFromSQLRecorded("SELect * FRom t1", s, p))
+	require.Equal(t, expected, s.BindingDigest)
+
+	require.False(t, fillFromSQLRecorded("SELect * FRom T1", s, p))
+	require.Equal(t, expected, s.BindingDigest)
 }

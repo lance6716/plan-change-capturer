@@ -71,6 +71,19 @@ func run(ctx context.Context, cfg *Config) error {
 	oldCfg := &cfg.OldVersion
 	maxConn := max(cfg.OldVersion.MaxConn, cfg.NewVersion.MaxConn)
 	eg, egCtx := errgroup.WithContext(ctx)
+
+	var allBindings map[string]source.Binding
+	readBindingDone := make(chan struct{})
+	eg.Go(func() error {
+		var err2 error
+		allBindings, err2 = source.ReadBinding(egCtx, oldDB)
+		if err2 != nil {
+			return errors.Trace(err2)
+		}
+		close(readBindingDone)
+		return nil
+	})
+
 	summFromSourceCh := make(chan *source.StmtSummary, maxConn)
 	eg.Go(func() error {
 		err2 := source.ReadStmtSummary(egCtx, oldDB, summFromSourceCh)
@@ -83,12 +96,27 @@ func run(ctx context.Context, cfg *Config) error {
 
 	summAfterPersistCh := make(chan *source.StmtSummary, maxConn)
 	eg.Go(func() error {
+		// wait binding is loaded
+		select {
+		case <-readBindingDone:
+		case <-egCtx.Done():
+			return nil
+		}
+
 		for {
 			select {
 			case s, ok := <-summFromSourceCh:
 				if !ok {
 					close(summAfterPersistCh)
 					return nil
+				}
+				if s.PlanInBinding {
+					b, ok2 := allBindings[s.BindingDigest]
+					if !ok2 {
+						util.Logger.Warn("binding not found", zap.String("sql_digest", s.SQLDigest))
+					} else {
+						s.Binding = b
+					}
 				}
 				err2 := mgr.WriteStmtSummary(s)
 				if err2 != nil {
@@ -111,6 +139,13 @@ func run(ctx context.Context, cfg *Config) error {
 	cmpWorkerCnt := atomic.NewInt64(int64(cmpWorkerConn))
 	for range cmpWorkerConn {
 		eg.Go(func() error {
+			// wait until binding is synced
+			select {
+			case <-readBindingDone:
+			case <-egCtx.Done():
+				return nil
+			}
+
 			for {
 				select {
 				case s, ok := <-summAfterPersistCh:
@@ -215,6 +250,17 @@ func cmpPlan(
 			util.Logger.Error("sync table failed", zap.Error(err2))
 			if util.IsUnretryableError(err2) {
 				ret.ErrMsg = err2.Error()
+			}
+			return ret
+		}
+	}
+
+	if s.Binding.BindSQL != "" {
+		err = syncBinding(ctx, newDB, s.Binding)
+		if err != nil {
+			util.Logger.Error("sync binding failed", zap.Error(err))
+			if util.IsUnretryableError(err) {
+				ret.ErrMsg = err.Error()
 			}
 			return ret
 		}

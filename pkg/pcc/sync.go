@@ -33,7 +33,7 @@ func syncForDB(
 	// TODO(lance6716): skip read structure if we already have it?
 	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, dbName)
 	if err2 != nil {
-		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
+		if merr, ok := err2.(*mysql.MySQLError); ok && util.IsSQLErrorUnretryable(merr) {
 			err2 = util.WrapUnretryableError(err2)
 		}
 		return errors.Trace(err2)
@@ -64,7 +64,7 @@ func syncForTable(
 ) error {
 	createDatabase, err2 := util.ReadCreateDatabase(ctx, oldDB, table[0])
 	if err2 != nil {
-		if merr, ok := err2.(*mysql.MySQLError); ok && util.CheckOldDBSQLErrorUnretryable(merr) {
+		if merr, ok := err2.(*mysql.MySQLError); ok && util.IsSQLErrorUnretryable(merr) {
 			err2 = util.WrapUnretryableError(err2)
 		}
 		return errors.Trace(err2)
@@ -128,5 +128,21 @@ func syncForTable(
 		return errors.Trace(err2)
 	}
 
+	return nil
+}
+
+func syncBinding(
+	ctx context.Context,
+	newDB *sql.DB,
+	binding source.Binding,
+) error {
+	s := "CREATE GLOBAL BINDING FOR " + binding.OriginalSQL + " USING " + binding.BindSQL
+	_, err := newDB.ExecContext(ctx, s)
+	if err != nil {
+		if merr, ok := err.(*mysql.MySQLError); ok && util.IsSQLErrorUnretryable(merr) {
+			err = util.WrapUnretryableError(err)
+		}
+		return errors.Annotatef(err, "sync binding %s", s)
+	}
 	return nil
 }

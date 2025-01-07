@@ -33,10 +33,10 @@ func IsUnretryableError(err error) bool {
 	return false
 }
 
-// CheckOldDBSQLErrorUnretryable checks the MySQL error from old version database
-// to determine if it is unretryable. For errors we don't have confidence, we
-// assume it is retryable so caller will execute the statement again in future.
-func CheckOldDBSQLErrorUnretryable(err *mysql.MySQLError) bool {
+// IsSQLErrorUnretryable checks the MySQL error to determine if it is
+// unretryable. For errors we don't have confidence, we assume it is retryable so
+// caller will execute the statement again in future.
+func IsSQLErrorUnretryable(err *mysql.MySQLError) bool {
 	if err == nil {
 		return false
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser"
 	"github.com/pingcap/tidb/pkg/parser/ast"
+	utilparser "github.com/pingcap/tidb/pkg/util/parser"
 	"go.uber.org/zap"
 )
 
@@ -35,8 +36,11 @@ type StmtSummary struct {
 	SumLatency           time.Duration
 	Instance             string
 	SummaryBeginTime     time.Time
+	PlanInBinding        bool
 	// computed fields
 	HasParseError bool
+	BindingDigest string
+	Binding       Binding
 }
 
 // ReadStmtSummary reads the statement summary from the TiDB cluster. It emits
@@ -52,8 +56,8 @@ func ReadStmtSummary(
 ) error {
 	// TODO(lance6716): filter on table/schema names, sql, sample user...
 	// TODO(lance6716): pagination on time range
-	// rely on the ast.GetStmtLabel function to filter out non-select statements
 	// TODO(lance6716): for plan_in_binding, need to get the sync binding first because binding may not take effect
+	// rely on the ast.GetStmtLabel function to filter out non-select statements
 	query := `
 		SELECT 
     		SCHEMA_NAME, 
@@ -65,7 +69,8 @@ func ReadStmtSummary(
     		EXEC_COUNT,
     		SUM_LATENCY,
     		INSTANCE,
-    		SUMMARY_BEGIN_TIME
+    		SUMMARY_BEGIN_TIME,
+    		PLAN_IN_BINDING
 		FROM INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
 		WHERE EXEC_COUNT > 1 AND STMT_TYPE IN ('Select', 'Insert', 'Replace', 'Update', 'Delete')`
 	rows, err := db.QueryContext(ctx, query)
@@ -97,6 +102,7 @@ func ReadStmtSummary(
 			&sumLatencyNanoSec,
 			&s.Instance,
 			&s.SummaryBeginTime,
+			&s.PlanInBinding,
 		)
 		if err != nil {
 			return errors.Annotatef(err, "failed to scan row for query: %s", query)
@@ -155,6 +161,7 @@ var dmlRE = regexp.MustCompile(`(?i)^\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b`)
 // - StmtSummary.SQL
 // - StmtSummary.TableNamesNeedToSync
 // - StmtSummary.HasParseError
+// - StmtSummary.BindingDigest if StmtSummary.PlanInBinding is true
 func fillFromSQLRecorded(sqlRecorded string, s *StmtSummary, p *parser.Parser) (skip bool) {
 	if strings.Contains(sqlRecorded, "(len:") {
 		util.Logger.Warn("skip SQL because it's already truncated",
@@ -193,6 +200,12 @@ func fillFromSQLRecorded(sqlRecorded string, s *StmtSummary, p *parser.Parser) (
 	}
 
 	s.TableNamesNeedToSync = util.ExtractTableNames(stmt, s.Schema)
+
+	if s.PlanInBinding {
+		restoreSQL := utilparser.RestoreWithDefaultDB(stmt, s.Schema, s.SQL)
+		_, d := parser.NormalizeDigestForBinding(restoreSQL)
+		s.BindingDigest = d.String()
+	}
 
 	return false
 }
@@ -249,4 +262,37 @@ func ReadTableStats(
 		return "", errors.Errorf("error when read response body from URL (%s): %s", url, err)
 	}
 	return string(content), nil
+}
+
+type Binding struct {
+	OriginalSQL string
+	BindSQL     string
+}
+
+// ReadBinding reads all enabled binding information from the TiDB cluster and
+// use a map of SQL digest to Binding to represent them.
+func ReadBinding(
+	ctx context.Context,
+	db *sql.DB,
+) (map[string]Binding, error) {
+	query := `SELECT original_sql, bind_sql, sql_digest FROM mysql.bind_info WHERE status = 'enabled'`
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, errors.Annotatef(err, "failed to execute query: %s", query)
+	}
+	defer rows.Close()
+
+	ret := make(map[string]Binding, 64)
+	for rows.Next() {
+		var (
+			b         Binding
+			sqlDigest string
+		)
+		err = rows.Scan(&b.OriginalSQL, &b.BindSQL, &sqlDigest)
+		if err != nil {
+			return nil, errors.Annotatef(err, "failed to scan row for query: %s", query)
+		}
+		ret[sqlDigest] = b
+	}
+	return ret, errors.Annotatef(rows.Err(), "failed to get rows for query: %s", query)
 }
