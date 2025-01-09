@@ -256,7 +256,7 @@ func cmpPlan(
 	}
 
 	if s.Binding.BindSQL != "" {
-		err = syncBinding(ctx, newDB, s.Binding)
+		err = syncer.CreateBinding(ctx, s.BindingDigest, s.Binding)
 		if err != nil {
 			util.Logger.Error("sync binding failed", zap.Error(err))
 			if util.IsUnretryableError(err) {

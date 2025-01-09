@@ -130,19 +130,3 @@ func syncForTable(
 
 	return nil
 }
-
-func syncBinding(
-	ctx context.Context,
-	newDB *sql.DB,
-	binding source.Binding,
-) error {
-	s := "CREATE GLOBAL BINDING FOR " + binding.OriginalSQL + " USING " + binding.BindSQL
-	_, err := newDB.ExecContext(ctx, s)
-	if err != nil {
-		if merr, ok := err.(*mysql.MySQLError); ok && util.IsSQLErrorUnretryable(merr) {
-			err = util.WrapUnretryableError(err)
-		}
-		return errors.Annotatef(err, "sync binding %s", s)
-	}
-	return nil
-}

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/lance6716/plan-change-capturer/pkg/source"
 	"github.com/lance6716/plan-change-capturer/pkg/util"
 	"github.com/pingcap/errors"
 	"go.uber.org/zap"
@@ -25,6 +26,8 @@ type Syncer struct {
 	tableErr     sync.Map // {dbName}.{tableName} -> execution error
 	statsOnce    sync.Map // statsPath -> sync.Once
 	statsErr     sync.Map // statsPath -> execution error
+	bindingOnce  sync.Map // bindingDigest -> sync.Once
+	bindingErr   sync.Map // bindingDigest -> execution error
 }
 
 func NewSyncer(db *sql.DB) *Syncer {
@@ -168,4 +171,36 @@ func (s *Syncer) loadStats(
 	defer mysql.DeregisterLocalFile(statsPath)
 	_, err = s.db.ExecContext(ctx, "LOAD STATS '"+statsPath+"'")
 	return errors.Annotatef(err, "load stats from %s", statsPath)
+}
+
+func (s *Syncer) CreateBinding(
+	ctx context.Context,
+	sqlDigest string,
+	binding source.Binding,
+) (err error) {
+	o := new(sync.Once)
+	once, _ := s.bindingOnce.LoadOrStore(sqlDigest, o)
+	once.(*sync.Once).Do(func() {
+		s.bindingErr.Store(sqlDigest, s.createBinding(ctx, binding))
+	})
+	errLoaded, _ := s.bindingErr.Load(sqlDigest)
+	if errLoaded == nil {
+		return nil
+	}
+	return errLoaded.(error)
+}
+
+func (s *Syncer) createBinding(
+	ctx context.Context,
+	binding source.Binding,
+) (err error) {
+	sql := "CREATE GLOBAL BINDING FOR " + binding.OriginalSQL + " USING " + binding.BindSQL
+	_, err = s.db.ExecContext(ctx, sql)
+	if err != nil {
+		if merr, ok := err.(*mysql.MySQLError); ok && util.IsSQLErrorUnretryable(merr) {
+			err = util.WrapUnretryableError(err)
+		}
+		return errors.Annotatef(err, "sync binding %s", s)
+	}
+	return nil
 }
