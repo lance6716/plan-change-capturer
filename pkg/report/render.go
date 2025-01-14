@@ -8,8 +8,9 @@ import (
 var t = template.Must(template.New("report").Parse(tpl))
 
 type Report struct {
+	Deployments        TableWithColRowHeader
 	TaskInfoItems      [][2]string // [key, value]
-	WorkloadInfoItems  [][2]string
+	CaptureInfoItems   [][2]string
 	ExecutionInfoItems [][2]string
 	Summary            Summary
 	TopSQLs            Table
@@ -33,6 +34,12 @@ type ChangeCount struct {
 type Table struct {
 	Header []string
 	Data   [][]string
+}
+
+type TableWithColRowHeader struct {
+	ColHeader []string   // assuming it's N+1 values for (RowHeader, N columns)
+	RowHeader []string   // assuming it's M values for M rows
+	Data      [][]string // it should be MxN values
 }
 
 type Details struct {

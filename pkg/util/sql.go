@@ -3,6 +3,7 @@ package util
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
@@ -185,4 +186,51 @@ func ReadCreateTableViewSeq(
 		return "", errors.Annotatef(err, "failed to get columns for query: %s", query)
 	}
 	return "", errors.Errorf("failed to find create table or view statement for %s.%s, got columns %v", escapedDBName, escapedTable, columnNames)
+}
+
+type ClusterInfo struct {
+	TiDBCnt     int
+	TiDBVersion string
+	PDVersion   string
+	TiKVVersion string
+}
+
+// ReadClusterInfo reads the cluster information from the TiDB cluster.
+func ReadClusterInfo(ctx context.Context, db *sql.DB) (*ClusterInfo, error) {
+	ret := &ClusterInfo{}
+
+	query := "SELECT TYPE, VERSION FROM INFORMATION_SCHEMA.CLUSTER_INFO"
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, errors.Annotatef(err, "failed to execute query: %s", query)
+	}
+	defer rows.Close()
+
+	tidbVerSet := make(map[string]struct{})
+	pdVerSet := make(map[string]struct{})
+	tikvVerSet := make(map[string]struct{})
+
+	for rows.Next() {
+		var typ, version string
+		err = rows.Scan(&typ, &version)
+		if err != nil {
+			return nil, errors.Annotatef(err, "failed to scan row for query: %s", query)
+		}
+		switch typ {
+		case "tidb":
+			ret.TiDBCnt++
+			tidbVerSet[version] = struct{}{}
+		case "pd":
+			pdVerSet[version] = struct{}{}
+		case "tikv":
+			tikvVerSet[version] = struct{}{}
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, errors.Annotatef(err, "failed to get rows for query: %s", query)
+	}
+	ret.TiDBVersion = strings.Join(slices.Collect(maps.Keys(tidbVerSet)), ",")
+	ret.PDVersion = strings.Join(slices.Collect(maps.Keys(pdVerSet)), ",")
+	ret.TiKVVersion = strings.Join(slices.Collect(maps.Keys(tikvVerSet)), ",")
+	return ret, nil
 }

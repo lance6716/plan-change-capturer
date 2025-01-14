@@ -6,12 +6,28 @@
 </head>
 <body>
 <h1>Plan Change Capturer Report</h1>
+<h2>Deployments:</h2>
+<table>
+    <tr>
+        {{ range .Deployments.ColHeader }}
+        <th>{{ . }}</th>
+        {{ end }}
+    </tr>
+    {{ range $i, $row := .Deployments.Data }}
+    <tr>
+        <th>{{ index $.Deployments.RowHeader $i }}</th>
+        {{ range $row }}
+        <td>{{ . }}</td>
+        {{ end }}
+    </tr>
+    {{ end }}
+</table>
 <h2>Task Information:</h2>
 {{ range .TaskInfoItems }}
 <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
 {{ end }}
-<h2>Workload Information:</h2>
-{{ range .WorkloadInfoItems }}
+<h2>Capture:</h2>
+{{ range .CaptureInfoItems }}
 <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
 {{ end }}
 <h2>Execution Information:</h2>
@@ -78,14 +94,14 @@
 <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
 {{ end }}
 {{ if .Source }}
-Source SQL Plan:<br>
+<b>Source SQL Plan :</b><br>
 {{ range .Source.Labels }}
 <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
 {{ end }}
 <pre>{{ .Source.Text }}</pre>
 {{ end }}
 {{ if .Target }}
-Target SQL Plan:<br>
+<b>Target SQL Plan :</b><br>
 {{ range .Target.Labels }}
 <b>{{ index . 0 }} : </b>{{ index . 1 }}<br>
 {{ end }}

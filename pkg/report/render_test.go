@@ -9,10 +9,19 @@ import (
 
 func TestRender(t *testing.T) {
 	r := &Report{
+		Deployments: TableWithColRowHeader{
+			ColHeader: []string{"top header 0", "top header 1", "top header 2"},
+			RowHeader: []string{"row header 1", "row header 2", "row header 3"},
+			Data: [][]string{
+				{"data 11", "data 12"},
+				{"data 21", "data 22"},
+				{"data 31", "data 32"},
+			},
+		},
 		TaskInfoItems: [][2]string{
 			{"key1", "value1"},
 		},
-		WorkloadInfoItems: [][2]string{
+		CaptureInfoItems: [][2]string{
 			{"key2", "value2"},
 			{"key3", "value3"},
 		},

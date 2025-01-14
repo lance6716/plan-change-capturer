@@ -57,7 +57,7 @@ func initLogger(loggerCfg *Log) error {
 
 func run(ctx context.Context, cfg *Config) error {
 	util.Logger.Info("start to run pcc", zap.Any("config", cfg))
-	start := time.Now().Format(time.RFC3339)
+	start := time.Now()
 	oldDB, newDB, err := prepareDBConnections(ctx, cfg)
 	if err != nil {
 		return errors.Trace(err)
@@ -177,11 +177,28 @@ func run(ctx context.Context, cfg *Config) error {
 			}
 		}
 	})
+
+	metaResult := &metadataResult{
+		startTime: start,
+	}
+	sourceInfo, err := util.ReadClusterInfo(egCtx, oldDB)
+	if err != nil {
+		util.Logger.Error("read source cluster info failed", zap.Error(err))
+	} else {
+		metaResult.sourceInfo = sourceInfo
+	}
+	targetInfo, err := util.ReadClusterInfo(egCtx, newDB)
+	if err != nil {
+		util.Logger.Error("read target cluster info failed", zap.Error(err))
+	} else {
+		metaResult.targetInfo = targetInfo
+	}
+
 	if err = eg.Wait(); err != nil {
 		return errors.Trace(err)
 	}
 
-	r, err := processResults(allResults, cfg, mgr, start)
+	r, err := processResults(allResults, cfg, mgr, metaResult)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -234,6 +251,14 @@ func cmpPlan(
 		OldVersionInfo: s,
 	}
 
+	oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
+	if err2 != nil {
+		// this error is not related to network, so it must be non-retryable
+		ret.ErrMsg = err2.Error()
+		return ret
+	}
+	ret.OldPlan = oldPlanStr
+
 	err := syncForDB(ctx, oldDB, s.Schema, syncer, mgr)
 	if err != nil {
 		// TODO(lance6716): check everywhere, log error even if it is retryable
@@ -266,13 +291,6 @@ func cmpPlan(
 		}
 	}
 
-	oldPlan, oldPlanStr, err2 := plan.NewPlanFromStmtSummaryPlan(s.PlanStr)
-	if err2 != nil {
-		// this error is not related to network, so it must be non-retryable
-		ret.ErrMsg = err2.Error()
-		return ret
-	}
-	ret.OldPlan = oldPlanStr
 	newPlan, newPlanStr, err2 := plan.NewPlanFromQuery(ctx, newDB, s.Schema, s.SQL)
 	if err2 != nil {
 		util.Logger.Error("get new plan failed", zap.Error(err2))
@@ -306,11 +324,17 @@ func cmpPlan(
 	return ret
 }
 
+type metadataResult struct {
+	startTime  time.Time
+	sourceInfo *util.ClusterInfo
+	targetInfo *util.ClusterInfo
+}
+
 func processResults(
 	allResults []*compare.PlanCmpResult,
 	cfg *Config,
 	mgr *filemgr.Manager,
-	startTimeStr string,
+	m *metadataResult,
 ) (*report.Report, error) {
 	waitRetry := make([]*compare.PlanCmpResult, 0, len(allResults))
 	waitRetryExecCount := 0
@@ -350,24 +374,38 @@ func processResults(
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	lastUpdated := time.Now().Format(time.RFC3339)
+	lastUpdated := time.Now()
 	oldCfg := &cfg.OldVersion
 	r := &report.Report{
+		Deployments: report.TableWithColRowHeader{
+			ColHeader: []string{"", "Source", "Target"},
+			RowHeader: []string{"# of TiDB", "TiDB version", "PD version", "TiKV version"},
+			Data: [][]string{
+				{strconv.Itoa(m.sourceInfo.TiDBCnt), strconv.Itoa(m.targetInfo.TiDBCnt)},
+				{m.sourceInfo.TiDBVersion, m.targetInfo.TiDBVersion},
+				{m.sourceInfo.PDVersion, m.targetInfo.PDVersion},
+				{m.sourceInfo.TiKVVersion, m.targetInfo.TiKVVersion},
+			},
+		},
 		TaskInfoItems: [][2]string{
 			{"Task Name", cfg.TaskName},
 			{"Task Owner", os.Getenv("USER")},
 			{"Task Host", host},
 			{"Description", cfg.Description},
 		},
-		WorkloadInfoItems: [][2]string{
-			{"Old Version TiDB Address", net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port))},
-			{"Old Version TiDB User", oldCfg.User},
-			{"Capture Method", "Statement Summary"},
+		CaptureInfoItems: [][2]string{
+			{"Capture task started", m.startTime.Format(time.RFC3339)},
+			{"Capture task completed", lastUpdated.Format(time.RFC3339)},
+			{"Total seconds captured", strconv.FormatFloat(lastUpdated.Sub(m.startTime).Seconds(), 'f', 2, 64)},
+			{"Interval", "N/A"},
+			{"Endpoint", net.JoinHostPort(oldCfg.Host, strconv.Itoa(oldCfg.Port))},
+			{"User", oldCfg.User},
+			{"Data Source", "system table"},
+			{"Filtering Rules", "EXEC_COUNT > 1"},
 			{"Total SQL Statement Count", strconv.Itoa(len(allResults))},
 		},
 		ExecutionInfoItems: [][2]string{
-			{"Started", startTimeStr},
-			{"Last Updated", lastUpdated},
+
 			{"Global Time Limit", "UNLIMITED"},
 			{"Per-SQL Time Limit", "UNUSED"},
 			{"Status", "Completed"},
